@@ -1,0 +1,88 @@
+[project]
+name = "garmin-mcp"
+version = "0.1.0"
+description = "Remote MCP server exposing Garmin Connect data as tools."
+requires-python = ">=3.12"
+readme = "README.md"
+authors = [{ name = "Tyler Irving" }]
+license = { text = "MIT" }
+dependencies = [
+    "mcp[cli]>=1.27.1,<2.0",
+    "garminconnect>=0.3.3,<0.4",
+    "pyjwt>=2.8.0",
+    "structlog>=24.1.0",
+    "pydantic>=2.7",
+    "uvicorn[standard]>=0.30",
+    "starlette>=0.37",
+    "tenacity>=8.2",
+    "python-dotenv>=1.0",
+    "anyio>=4.0",
+]
+
+[project.scripts]
+garmin-mcp = "garmin_mcp.__main__:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/garmin_mcp"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "RUF", "SIM", "PTH"]
+ignore = [
+    "E501",  # handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B", "N802"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = "garminconnect.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "garth.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+# FastMCP's @custom_route decorator is currently untyped; tolerate that.
+[[tool.mypy.overrides]]
+module = "garmin_mcp.server"
+disable_error_code = ["untyped-decorator"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.uv]
+package = true
