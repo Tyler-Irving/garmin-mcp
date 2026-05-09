@@ -1,0 +1,48 @@
+---
+CHECKPOINT: 2026-05-08 21:23 CDT
+Completed this session:
+- Scaffolded greenfield Python project using uv (Python 3.12, src layout, hatchling build).
+- Built a remote MCP server exposing Garmin Connect data as 9 tools: get_sleep, get_recent_activities, get_activity_details, get_training_load, get_hrv_status, get_body_battery, get_steps_and_calories, get_resting_heart_rate, get_stress.
+- Implemented OAuth 2.1 authorization server with PKCE, RFC 7591 dynamic client registration, JWT access tokens, and refresh-token rotation. Single-user, password-gated.
+- Built async-safe TTL cache with per-tool TTLs (5m for activities list, 1h for daily summaries, 24h for activity details which are immutable).
+- Built async-friendly garminconnect wrapper: lazy login, persisted session tokens to /tmp/garth, retry with exponential backoff, 1 req/2s rate limit, transparent re-auth on 401/expiry.
+- Wrote login UI, /health and OAuth /.well-known endpoints, structured logging via structlog routed to stderr.
+- Wrote 14 pytest tests covering cache semantics and tool parsing with a fake Garmin client.
+- Wrote Dockerfile (python:3.12-slim + uv) and full Cloud Run deploy walkthrough in DEPLOY.md.
+- Verified end-to-end: stdio mode (mcp dev with Inspector), HTTP mode locally, and Docker container all connect and serve tools correctly. User confirmed real Garmin data flows through.
+
+Current state:
+- All tests pass (14/14). ruff check + ruff format clean. mypy --strict clean.
+- Local stdio mode works in MCP Inspector. Real Garmin tool calls return real data.
+- HTTP mode boots, OAuth discovery (/.well-known/oauth-protected-resource and /.well-known/oauth-authorization-server) works, /mcp 401 includes the correct WWW-Authenticate header, dynamic client registration works.
+- Docker image builds and runs healthy.
+- NOT YET DEPLOYED to Cloud Run. Next step is the deploy.
+
+Bugs fixed mid-session (worth knowing for the future):
+- structlog defaulted to stdout, which collided with the MCP JSON-RPC stream in stdio mode and broke Inspector "Connection Error". Fix: routed structlog (WriteLoggerFactory file=sys.stderr) and stdlib logging (basicConfig stream=sys.stderr) to stderr.
+- Relative imports (from .auth import ...) failed when mcp dev loaded server.py as a top-level module without parent package context. Fix: switched server.py and __main__.py to absolute imports (from garmin_mcp.auth import ...).
+- garminconnect 0.3.3 requires Python 3.12+. Bumped requires-python and Dockerfile from 3.11 to 3.12.
+- Body-battery parser had wrong max/min logic. Fix: compute from timeline values rather than misreading "charged" as a max.
+
+Assumptions made:
+- Single-user model. One MCP_AUTH_PASSWORD, one Garmin account.
+- Garmin account has MFA disabled. The wrapper uses return_on_mfa=False and cannot prompt for an MFA code on cold start.
+- Refresh tokens, registered DCR clients, and pending login states live in process memory and are lost on cold start. Access tokens (JWTs) survive because they are stateless.
+- Cloud Run target: us-central1, min=0, max=1 instances, 512Mi memory, 1 CPU. Cache cleared on cold start is acceptable for personal use.
+- Unofficial garminconnect package is the right call; no fallback if Garmin changes its API.
+
+Next session should start with:
+1. Generate secrets: openssl rand for MCP_AUTH_PASSWORD and JWT_SECRET. Save the password somewhere safe (you will type it once during the Claude connector setup).
+2. Run the two-stage Cloud Run deploy from DEPLOY.md: first deploy with a placeholder MCP_ISSUER_URL, capture the printed Service URL, then `gcloud run services update` to set MCP_ISSUER_URL to the real URL.
+3. Add `https://<service-url>/mcp` as a custom connector in Claude.ai Settings -> Connectors. Enter the MCP_AUTH_PASSWORD when prompted.
+4. Tail logs in another terminal: `gcloud run services logs tail garmin-mcp --region us-central1`. Look for oauth.client.registered, oauth.login.success, garmin.login.success.
+5. Test a few tool calls from Claude. Expect ~5s on the first call after a cold start.
+
+Files in the project (everything below was written this session):
+- pyproject.toml, uv.lock
+- Dockerfile, .dockerignore, .env.example, .gitignore
+- src/garmin_mcp/__init__.py, __main__.py, server.py, auth.py, cache.py, models.py, garmin_client.py
+- tests/__init__.py, test_cache.py, test_tools.py
+- README.md, DEPLOY.md
+- claude-progress.txt (this file)
+---
