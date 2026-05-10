@@ -25,4 +25,4 @@ ENV PORT=8080 \
 EXPOSE 8080
 
 # /tmp is writable on Cloud Run; that's where we cache Garmin OAuth tokens.
-CMD ["uv", "run", "--no-dev", "python", "-m", "garmin_mcp"]
+CMD ["uv", "run", "--no-dev", "garmin-mcp", "serve"]

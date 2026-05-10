@@ -1,11 +1,21 @@
 [project]
 name = "garmin-mcp"
 version = "0.1.0"
-description = "Remote MCP server exposing Garmin Connect data as tools."
+description = "MCP server exposing Garmin Connect data to Claude."
 requires-python = ">=3.12"
 readme = "README.md"
 authors = [{ name = "Tyler Irving" }]
 license = { text = "MIT" }
+keywords = ["mcp", "garmin", "claude", "fitness", "health"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
     "mcp[cli]>=1.27.1,<2.0",
     "garminconnect>=0.3.3,<0.4",
@@ -17,10 +27,15 @@ dependencies = [
     "tenacity>=8.2",
     "python-dotenv>=1.0",
     "anyio>=4.0",
+    "platformdirs>=4.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Tyler-Irving/garmin-mcp"
+Issues = "https://github.com/Tyler-Irving/garmin-mcp/issues"
+
 [project.scripts]
-garmin-mcp = "garmin_mcp.__main__:main"
+garmin-mcp = "garmin_mcp.cli:main"
 
 [project.optional-dependencies]
 dev = [

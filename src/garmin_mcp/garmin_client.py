@@ -54,8 +54,9 @@ class GarminClient:
         token_dir: str = "/tmp/garth",
         rate_limit_seconds: float = 2.0,
     ) -> None:
-        if not email or not password:
-            raise ValueError("GARMIN_EMAIL and GARMIN_PASSWORD must both be set.")
+        # Empty creds are allowed: the server can run on saved tokens alone
+        # (seeded by `garmin-mcp login`). They are only required when the saved
+        # session expires and a fresh login is needed.
         self._email = email
         self._password = password
         self._token_dir = Path(token_dir)
@@ -84,13 +85,19 @@ class GarminClient:
                     reason=type(exc).__name__,
                     detail=str(exc)[:200],
                 )
+                if not self._email or not self._password:
+                    raise GarminAuthError(
+                        "Saved Garmin session is invalid and no credentials are set. "
+                        "Run `garmin-mcp login` to re-authenticate, or set "
+                        "GARMIN_EMAIL and GARMIN_PASSWORD."
+                    ) from exc
                 client = Garmin(email=self._email, password=self._password, return_on_mfa=False)
                 try:
                     await asyncio.to_thread(client.login)
                 except Exception as login_exc:
                     raise GarminAuthError(f"Garmin login failed: {login_exc}") from login_exc
                 try:
-                    await asyncio.to_thread(client.garth.dump, str(self._token_dir))
+                    await asyncio.to_thread(client.client.dump, str(self._token_dir))
                 except Exception as dump_exc:  # non-fatal; we just won't cache tokens
                     log.warning("garmin.token_dump.failed", error=str(dump_exc))
                 log.info("garmin.login.success")

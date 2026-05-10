@@ -64,6 +64,7 @@ from garmin_mcp.models import (
     _opt_int,
     _opt_str,
 )
+from garmin_mcp.paths import default_token_dir
 
 load_dotenv()
 
@@ -96,7 +97,7 @@ MCP_PASSWORD = os.getenv("MCP_AUTH_PASSWORD", "")
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 GARMIN_EMAIL = os.getenv("GARMIN_EMAIL", "")
 GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD", "")
-GARMIN_TOKEN_DIR = os.getenv("GARMIN_TOKEN_DIR", "/tmp/garth")
+GARMIN_TOKEN_DIR = default_token_dir()
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
 
@@ -158,10 +159,6 @@ _garmin: GarminClient | None = None
 def _get_garmin() -> GarminClient:
     global _garmin
     if _garmin is None:
-        if not GARMIN_EMAIL or not GARMIN_PASSWORD:
-            raise GarminClientError(
-                "Garmin credentials are not set. Configure GARMIN_EMAIL and GARMIN_PASSWORD."
-            )
         _garmin = GarminClient(
             email=GARMIN_EMAIL,
             password=GARMIN_PASSWORD,
