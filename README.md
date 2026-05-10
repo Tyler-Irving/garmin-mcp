@@ -1,6 +1,8 @@
 # garmin-mcp
 
-An [MCP](https://modelcontextprotocol.io/) server that exposes your Garmin Connect data to Claude as tools. Ask things like "how did I sleep last night?" or "summarise my training load this week" and Claude can answer using your real Garmin data instead of you copy-pasting screenshots from the app.
+[![PyPI](https://img.shields.io/pypi/v/garmin-mcp.svg)](https://pypi.org/project/garmin-mcp/) [![Python](https://img.shields.io/pypi/pyversions/garmin-mcp.svg)](https://pypi.org/project/garmin-mcp/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+An [MCP](https://modelcontextprotocol.io/) server that exposes your Garmin Connect data to Claude as tools. Ask things like *"how did I sleep last night?"* or *"summarise my training load this week"* and Claude answers using your real Garmin data instead of you copy-pasting screenshots from the app.
 
 Single-user, read-only. Two ways to run it:
 
@@ -17,7 +19,7 @@ Single-user, read-only. Two ways to run it:
 | `get_recent_activities`    | List of recent activities with type, duration, distance, average heart rate. |
 | `get_activity_details`     | Full metrics for one activity, including splits, HR zones, and power.        |
 | `get_training_load`        | Daily training load with acute (ATL), chronic (CTL), and current status.     |
-| `get_hrv_status`           | Current HRV status, baseline range, and the last 7 nights of readings.      |
+| `get_hrv_status`           | Current HRV status, baseline range, and the last 7 nights of readings.       |
 | `get_body_battery`         | Body battery values across the day with min, max, charged, drained.          |
 | `get_steps_and_calories`   | Daily step count, distance, calories, floors, and intensity minutes.         |
 | `get_resting_heart_rate`   | Resting heart rate trend and average over the requested window.              |
@@ -25,27 +27,42 @@ Single-user, read-only. Two ways to run it:
 
 Every response is a Pydantic model serialised to JSON, with `null` for fields Garmin did not record.
 
-## Quick start — Claude Desktop (recommended)
+## Quick start — Claude Desktop
 
-Requires Python 3.12+, [`uv`](https://docs.astral.sh/uv/) (install with `curl -LsSf https://astral.sh/uv/install.sh | sh`), and a Garmin Connect account.
+Requires Python 3.12+ and [`uv`](https://docs.astral.sh/uv/) (install with `curl -LsSf https://astral.sh/uv/install.sh | sh`).
 
-### 1. Seed your Garmin session
-
-Run the interactive login once. It handles MFA if your account has it enabled and saves session tokens to a per-user cache directory.
+### 1. Authorise once
 
 ```bash
 uvx garmin-mcp login
 ```
 
-You'll be prompted for your Garmin email, password, and (if applicable) an MFA code.
+Prompts for your Garmin email, password, and MFA code (if enabled), then saves session tokens to your user cache directory. You won't be prompted again until the tokens eventually expire (typically weeks to months).
 
-### 2. Add it to Claude Desktop
+### 2. Add the server to Claude Desktop
 
-Edit your Claude Desktop config:
+Edit `claude_desktop_config.json`:
 
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 - **Linux:** `~/.config/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "garmin": {
+      "command": "uvx",
+      "args": ["garmin-mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop. The Garmin tools appear in the tool picker. Ask Claude *"what was my resting heart rate this week?"* to test.
+
+### 3. (Optional) Set credentials for unattended re-auth
+
+By default, when Garmin tokens expire you'll see a "saved Garmin session is invalid" error and you'll need to re-run `uvx garmin-mcp login`. To skip that step, put your credentials in the config so the server can silently re-authenticate:
 
 ```json
 {
@@ -62,18 +79,27 @@ Edit your Claude Desktop config:
 }
 ```
 
-The credentials in `env` are used to silently refresh the session when the saved tokens expire. Without them, you'd need to re-run `garmin-mcp login` periodically.
+Anyone with read access to this file can see these credentials.
 
-Restart Claude Desktop. The Garmin tools appear in the tool picker. Ask Claude something like *"what was my resting heart rate this week?"* to test.
+### Where session tokens are stored
+
+`garmin-mcp login` writes session tokens to your platform's user cache directory:
+
+| OS      | Path                                       |
+| ------- | ------------------------------------------ |
+| Linux   | `~/.cache/garmin-mcp/garth/`               |
+| macOS   | `~/Library/Caches/garmin-mcp/garth/`       |
+| Windows | `%LOCALAPPDATA%\garmin-mcp\Cache\garth\`   |
+
+Delete the `garth/` directory to "log out" of Garmin.
 
 ## Self-hosted HTTP (Claude.ai web/mobile)
 
-If you want to use the connector from Claude.ai on the web or your phone, run the same server in HTTP mode. The `serve` subcommand wraps it in an OAuth 2.1 layer with PKCE and Dynamic Client Registration so Claude.ai can connect to it as a custom connector.
+If you want the connector available from Claude.ai on the web or your phone, run the same server in HTTP mode. The `serve` subcommand wraps it in an OAuth 2.1 layer with PKCE and Dynamic Client Registration so Claude.ai can connect to it as a custom connector.
 
-See [DEPLOY.md](DEPLOY.md) for the full Cloud Run walkthrough. The short version:
+See [DEPLOY.md](DEPLOY.md) for the Cloud Run walkthrough. The short version:
 
 ```bash
-# Build and run locally first to verify
 docker build -t garmin-mcp .
 docker run --rm -p 8080:8080 \
   -e MCP_ISSUER_URL=http://localhost:8080 \
@@ -94,9 +120,9 @@ This is intentionally minimal: one password, one user. Anyone with the password 
 
 ## Security caveats
 
-* Your Garmin credentials sit in environment variables (Claude Desktop config or Cloud Run env). They never leave your machine / server, but anyone with read access there can see them. Pick a Garmin account that does not double as anything important.
-* The HTTP-mode password is compared with `secrets.compare_digest`. Pick a long, random one (32+ bytes).
-* The unofficial `garminconnect` library can break when Garmin changes their internal API. If a tool starts returning empty data, check that package's changelog.
+* This is single-user software. Don't run it as a shared service for multiple Garmin accounts — you'd be holding other people's credentials, and it likely violates Garmin's ToS.
+* Garmin credentials and session tokens live on your local machine. Treat any password you put in a JSON config file as compromised in the long term — use a dedicated Garmin account if that's a concern.
+* The unofficial [`garminconnect`](https://github.com/cyberjunky/python-garminconnect) library can break when Garmin changes their internal API. If a tool starts returning empty data, check that package's changelog.
 * In HTTP mode, registered DCR clients and refresh tokens live in process memory and disappear on restart. Access tokens (JWTs) survive because they are stateless.
 * This server is read-only. It does not write activities, edit profile fields, or upload anything to Garmin.
 
@@ -121,33 +147,21 @@ garmin-mcp/
         └── models.py          # Pydantic response models
 ```
 
-## Running from source
+## Contributing
 
 ```bash
 git clone https://github.com/Tyler-Irving/garmin-mcp.git
 cd garmin-mcp
-uv sync
+uv sync --extra dev
 
-# Interactive Garmin login (handles MFA)
-uv run garmin-mcp login
+uv run garmin-mcp login                       # one-time interactive login
+uv run mcp dev src/garmin_mcp/server.py       # inspect tools in MCP Inspector
+uv run garmin-mcp                             # stdio mode
+uv run garmin-mcp serve                       # HTTP mode
 
-# Inspect tools in the MCP dev inspector
-uv run mcp dev src/garmin_mcp/server.py
-
-# Stdio mode (for Claude Desktop)
-uv run garmin-mcp
-
-# HTTP mode (for remote / Cloud Run)
-uv run garmin-mcp serve
-```
-
-## Tests and lint
-
-```bash
-uv run pytest          # unit tests
-uv run ruff check .    # lint
-uv run ruff format --check .
-uv run mypy src tests  # type check
+uv run pytest                                 # tests
+uv run ruff check . && uv run ruff format --check .
+uv run mypy src tests
 ```
 
 ## Acknowledgements
