@@ -1,6 +1,6 @@
 [project]
 name = "garmin-mcp"
-version = "0.2.1"
+version = "0.2.2"
 description = "MCP server exposing Garmin Connect data to Claude."
 requires-python = ">=3.12"
 readme = "README.md"

@@ -118,11 +118,12 @@ RESPIRATION_PAYLOAD: dict[str, Any] = {
     "avgWakingRespirationValue": 15.4,
 }
 
+# Real Garmin shape: weekly_steps nests its metrics under a "values" dict.
 WEEKLY_STEPS_PAYLOAD: list[dict[str, Any]] = [
-    {"calendarDate": "2026-04-13", "totalSteps": 52000, "averageSteps": 7428},
-    {"calendarDate": "2026-04-20", "totalSteps": 60100, "averageSteps": 8585},
-    {"calendarDate": "2026-04-27", "totalSteps": 47800, "averageSteps": 6828},
-    {"calendarDate": "2026-05-04", "totalSteps": 55500, "averageSteps": 7928},
+    {"calendarDate": "2026-04-13", "values": {"totalSteps": 52000.0, "averageSteps": 7428.5}},
+    {"calendarDate": "2026-04-20", "values": {"totalSteps": 60100.0, "averageSteps": 8585.7}},
+    {"calendarDate": "2026-04-27", "values": {"totalSteps": 47800.0, "averageSteps": 6828.5}},
+    {"calendarDate": "2026-05-04", "values": {"totalSteps": 55500.0, "averageSteps": 7928.5}},
 ]
 
 
@@ -250,3 +251,38 @@ async def test_weekly_summary_rejects_bad_metric() -> None:
     server_module.set_garmin_client_for_testing(FakeGarminClient({}))
     with pytest.raises(ValueError, match="metric must be one of"):
         await server_module.get_weekly_summary(metric="naps")
+
+
+# ----- regression tests for bugs uncovered by the v0.2.1 real-Garmin smoke -----
+
+
+@pytest.mark.asyncio
+async def test_rhr_parses_real_garmin_shape() -> None:
+    """Garmin nests RHR as allMetrics.metricsMap.WELLNESS_RESTING_HEART_RATE[].value."""
+    payload = {
+        "allMetrics": {
+            "metricsMap": {
+                "WELLNESS_RESTING_HEART_RATE": [{"value": 57.0, "calendarDate": "2026-05-09"}]
+            }
+        }
+    }
+    server_module.set_garmin_client_for_testing(FakeGarminClient({"get_rhr_day": payload}))
+    result = await server_module.get_resting_heart_rate(days=1)
+    assert result.days[0].rhr_bpm == 57
+    assert result.avg_rhr_bpm == 57.0
+
+
+@pytest.mark.asyncio
+async def test_respiration_synthesises_avg_when_missing() -> None:
+    """Real Garmin payloads often omit avgRespirationValue but have sleep+waking."""
+    payload = {
+        "calendarDate": "2026-05-09",
+        "lowestRespirationValue": 9.0,
+        "highestRespirationValue": 24.0,
+        "avgWakingRespirationValue": 16.0,
+        "avgSleepRespirationValue": 14.0,
+    }
+    server_module.set_garmin_client_for_testing(FakeGarminClient({"get_respiration_data": payload}))
+    result = await server_module.get_respiration(date="2026-05-09")
+    assert result.avg_breaths_per_min == pytest.approx(15.0)
+    assert result.note is None

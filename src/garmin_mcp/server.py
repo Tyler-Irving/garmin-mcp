@@ -915,14 +915,16 @@ def _parse_rhr_day(date: str, raw: Any) -> RHRDay:
     if not isinstance(raw, dict):
         return RHRDay(date=date)
     rhr: int | None = None
-    metrics = raw.get("allMetrics") or {}
-    if isinstance(metrics, dict):
-        for entries in metrics.values():
-            if isinstance(entries, list):
-                for entry in entries:
-                    if isinstance(entry, dict) and entry.get("value") is not None:
-                        rhr = _opt_int(entry.get("value"))
-                        break
+    # Garmin nests RHR as allMetrics.metricsMap.WELLNESS_RESTING_HEART_RATE[*].value
+    metrics_map = (raw.get("allMetrics") or {}).get("metricsMap")
+    if isinstance(metrics_map, dict):
+        for entries in metrics_map.values():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("value") is not None:
+                    rhr = _opt_int(entry.get("value"))
+                    break
             if rhr is not None:
                 break
     if rhr is None:
@@ -1170,13 +1172,20 @@ def _parse_body_composition(raw: Any) -> BodyCompositionTrend:
 def _parse_respiration(raw: Any, date: str) -> RespirationSummary:
     if not isinstance(raw, dict):
         return RespirationSummary(date=date, note="No respiration data recorded.")
+    avg = _opt_float(raw.get("avgRespirationValue"))
+    sleep_v = _opt_float(raw.get("avgSleepRespirationValue"))
+    wake_v = _opt_float(raw.get("avgWakingRespirationValue"))
+    # Garmin doesn't always populate an overall daily average; synthesise one
+    # from sleep + waking when both are present.
+    if avg is None and sleep_v is not None and wake_v is not None:
+        avg = (sleep_v + wake_v) / 2
     summary = RespirationSummary(
         date=_opt_str(raw.get("calendarDate")) or date,
-        avg_breaths_per_min=_opt_float(raw.get("avgRespirationValue")),
+        avg_breaths_per_min=avg,
         lowest_breaths_per_min=_opt_float(raw.get("lowestRespirationValue")),
         highest_breaths_per_min=_opt_float(raw.get("highestRespirationValue")),
-        avg_sleep_breaths_per_min=_opt_float(raw.get("avgSleepRespirationValue")),
-        avg_waking_breaths_per_min=_opt_float(raw.get("avgWakingRespirationValue")),
+        avg_sleep_breaths_per_min=sleep_v,
+        avg_waking_breaths_per_min=wake_v,
     )
     if summary.avg_breaths_per_min is None:
         summary = summary.model_copy(update={"note": "No respiration data recorded for this date."})
@@ -1191,19 +1200,26 @@ def _parse_weekly_summary(metric: str, raw: Any) -> WeeklySummary:
     for entry in raw:
         if not isinstance(entry, dict):
             continue
+        # Garmin's weekly_steps wraps the metrics in a nested `values` dict;
+        # weekly_stress and weekly_intensity_minutes keep them at top level.
+        raw_values = entry.get("values")
+        nested: dict[str, Any] = raw_values if isinstance(raw_values, dict) else entry
         week_start = (
             _opt_str(entry.get("calendarDate"))
             or _opt_str(entry.get("weekStart"))
             or _opt_str(entry.get("startDate"))
             or ""
         )
+        value: float | None
         if metric == "steps":
-            value = _opt_float(entry.get("totalSteps") or entry.get("averageSteps"))
+            value = _opt_float(nested.get("totalSteps") or nested.get("averageSteps"))
         elif metric == "stress":
-            value = _opt_float(entry.get("value") or entry.get("averageStressLevel"))
+            value = _opt_float(
+                entry.get("value") or nested.get("value") or nested.get("averageStressLevel")
+            )
         else:  # intensity_minutes
-            mod = _opt_float(entry.get("weeklyModerate") or entry.get("moderateValue")) or 0.0
-            vig = _opt_float(entry.get("weeklyVigorous") or entry.get("vigorousValue")) or 0.0
+            mod = _opt_float(nested.get("weeklyModerate") or nested.get("moderateValue")) or 0.0
+            vig = _opt_float(nested.get("weeklyVigorous") or nested.get("vigorousValue")) or 0.0
             value = mod + vig * 2  # Garmin convention: vigorous counts double
         buckets.append(WeeklyBucket(week_start=week_start, value=value))
 
