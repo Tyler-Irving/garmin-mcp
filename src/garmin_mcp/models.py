@@ -195,6 +195,102 @@ class StressSummary(_StrictBase):
     timeline: list[StressBucket] = Field(default_factory=list)
 
 
+class TrainingReadinessFactor(_StrictBase):
+    name: str
+    feedback: str | None = None
+    level: str | None = None
+
+
+class TrainingReadiness(_StrictBase):
+    date: str
+    score: int | None = Field(default=None, description="0-100 training readiness score.")
+    level: str | None = Field(
+        default=None, description="Garmin readiness level, e.g. LOW, MODERATE, HIGH, PRIME."
+    )
+    feedback_short: str | None = None
+    feedback_long: str | None = None
+    sleep_score: int | None = None
+    sleep_history_score: int | None = None
+    recovery_time_hours: int | None = None
+    acute_load: float | None = None
+    hrv_status: str | None = None
+    stress_history: int | None = None
+    factors: list[TrainingReadinessFactor] = Field(default_factory=list)
+    note: str | None = None
+
+
+class RacePrediction(_StrictBase):
+    distance: str = Field(description="5k, 10k, halfMarathon, or marathon.")
+    seconds: int | None = None
+
+
+class FitnessMetrics(_StrictBase):
+    date: str
+    vo2_max_running: float | None = Field(default=None, description="ml/kg/min for running.")
+    vo2_max_cycling: float | None = Field(default=None, description="ml/kg/min for cycling.")
+    fitness_age: float | None = None
+    race_predictions: list[RacePrediction] = Field(default_factory=list)
+    note: str | None = None
+
+
+class PersonalRecord(_StrictBase):
+    record_type: str = Field(description="Garmin label like '1k', '5k', 'longestRun', etc.")
+    value_seconds: float | None = Field(
+        default=None, description="Time-based PR value in seconds, if applicable."
+    )
+    value_meters: float | None = Field(
+        default=None, description="Distance-based PR value in meters, if applicable."
+    )
+    raw_value: float | None = Field(default=None, description="Raw value Garmin reported.")
+    activity_type: str | None = None
+    record_date: str | None = None
+    activity_id: str | None = None
+
+
+class PersonalRecords(_StrictBase):
+    records: list[PersonalRecord] = Field(default_factory=list)
+    count: int
+
+
+class BodyCompositionDay(_StrictBase):
+    date: str
+    weight_kg: float | None = None
+    body_fat_percent: float | None = None
+    body_water_percent: float | None = None
+    muscle_mass_kg: float | None = None
+    bone_mass_kg: float | None = None
+    bmi: float | None = None
+
+
+class BodyCompositionTrend(_StrictBase):
+    days: list[BodyCompositionDay] = Field(default_factory=list)
+    latest_weight_kg: float | None = None
+    avg_weight_kg: float | None = None
+    note: str | None = None
+
+
+class RespirationSummary(_StrictBase):
+    date: str
+    avg_breaths_per_min: float | None = None
+    lowest_breaths_per_min: float | None = None
+    highest_breaths_per_min: float | None = None
+    avg_sleep_breaths_per_min: float | None = None
+    avg_waking_breaths_per_min: float | None = None
+    note: str | None = None
+
+
+class WeeklyBucket(_StrictBase):
+    week_start: str
+    value: float | None = None
+
+
+class WeeklySummary(_StrictBase):
+    metric: str = Field(description="steps, stress, or intensity_minutes.")
+    weeks: list[WeeklyBucket] = Field(default_factory=list)
+    avg_value: float | None = None
+    note: str | None = None
+
+
 def _opt_int(value: Any) -> int | None:
     if value is None or value == "":
         return None

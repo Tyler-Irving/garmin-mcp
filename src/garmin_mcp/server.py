@@ -49,9 +49,16 @@ from garmin_mcp.models import (
     ActivitySplit,
     BodyBatteryReading,
     BodyBatterySummary,
+    BodyCompositionDay,
+    BodyCompositionTrend,
+    FitnessMetrics,
     HRVDayReading,
     HRVStatus,
     HRZone,
+    PersonalRecord,
+    PersonalRecords,
+    RacePrediction,
+    RespirationSummary,
     RestingHeartRateTrend,
     RHRDay,
     SleepSummary,
@@ -60,6 +67,10 @@ from garmin_mcp.models import (
     StressSummary,
     TrainingLoadDay,
     TrainingLoadSummary,
+    TrainingReadiness,
+    TrainingReadinessFactor,
+    WeeklyBucket,
+    WeeklySummary,
     _opt_float,
     _opt_int,
     _opt_str,
@@ -431,6 +442,172 @@ async def get_stress(date: str | None = None) -> StressSummary:
     return result
 
 
+@mcp.tool()
+async def get_training_readiness(date: str | None = None) -> TrainingReadiness:
+    """Daily training readiness score (0-100) with contributing factors.
+
+    The score reflects how prepared the user is to train, drawing on sleep,
+    HRV status, recovery time, and recent training load.
+
+    Args:
+        date: Calendar date in YYYY-MM-DD format. Defaults to today.
+    """
+    target_date = _normalise_date(date, _today_iso())
+    cache_key = TTLCache.make_key("get_training_readiness", {"date": target_date})
+
+    async def fetch() -> TrainingReadiness:
+        client = _get_garmin()
+        raw = await client.call("get_training_readiness", target_date)
+        return _parse_training_readiness(raw, target_date)
+
+    result: TrainingReadiness = await _cache.get_or_compute(cache_key, 3600, fetch)
+    return result
+
+
+@mcp.tool()
+async def get_fitness_metrics(date: str | None = None) -> FitnessMetrics:
+    """VO2 max (running and cycling), fitness age, and predicted race times.
+
+    Combines Garmin's "max metrics" tile (VO2 max, fitness age) with current
+    race-time predictions for 5K, 10K, half marathon, and marathon.
+
+    Args:
+        date: Calendar date for the VO2 max snapshot in YYYY-MM-DD format.
+            Defaults to today.
+    """
+    target_date = _normalise_date(date, _today_iso())
+    cache_key = TTLCache.make_key("get_fitness_metrics", {"date": target_date})
+
+    async def fetch() -> FitnessMetrics:
+        client = _get_garmin()
+        max_metrics: Any = None
+        max_date = target_date
+        # VO2 max only updates after qualifying activities, so today is often
+        # empty. Walk back up to a week to find the most recent reading.
+        for offset in (0, 1, 3, 7):
+            probe_date = (Date.fromisoformat(target_date) - timedelta(days=offset)).isoformat()
+            try:
+                payload = await client.call("get_max_metrics", probe_date)
+            except GarminClientError as exc:
+                log.warning(
+                    "fitness.max_metrics.failed",
+                    date=probe_date,
+                    error=str(exc)[:200],
+                )
+                continue
+            if payload:
+                max_metrics = payload
+                max_date = probe_date
+                break
+        try:
+            race = await client.call("get_race_predictions")
+        except GarminClientError as exc:
+            log.warning("fitness.race_predictions.failed", error=str(exc)[:200])
+            race = None
+        return _parse_fitness_metrics(max_date, max_metrics, race)
+
+    result: FitnessMetrics = await _cache.get_or_compute(cache_key, 86400, fetch)
+    return result
+
+
+@mcp.tool()
+async def get_personal_records() -> PersonalRecords:
+    """Personal records across activity types (fastest 1K/5K/10K, longest run, etc.)."""
+    cache_key = TTLCache.make_key("get_personal_records", None)
+
+    async def fetch() -> PersonalRecords:
+        client = _get_garmin()
+        raw = await client.call("get_personal_record")
+        return _parse_personal_records(raw)
+
+    result: PersonalRecords = await _cache.get_or_compute(cache_key, 86400, fetch)
+    return result
+
+
+@mcp.tool()
+async def get_body_composition(
+    end_date: str | None = None,
+    days: int = 30,
+) -> BodyCompositionTrend:
+    """Weight, body fat, and muscle-mass trend over recent days.
+
+    Returns one row per day Garmin has a reading for, plus the latest weight
+    and average over the window.
+
+    Args:
+        end_date: End of the window in YYYY-MM-DD format. Defaults to today.
+        days: Window size in days. Capped at 90.
+    """
+    days = max(1, min(90, days))
+    end = _normalise_date(end_date, _today_iso())
+    start = (Date.fromisoformat(end) - timedelta(days=days - 1)).isoformat()
+    cache_key = TTLCache.make_key("get_body_composition", {"start": start, "end": end})
+
+    async def fetch() -> BodyCompositionTrend:
+        client = _get_garmin()
+        raw = await client.call("get_body_composition", start, end)
+        return _parse_body_composition(raw)
+
+    result: BodyCompositionTrend = await _cache.get_or_compute(cache_key, 3600, fetch)
+    return result
+
+
+@mcp.tool()
+async def get_respiration(date: str | None = None) -> RespirationSummary:
+    """Daily respiration rate: average, min, max, and waking vs. sleeping averages.
+
+    Args:
+        date: Calendar date in YYYY-MM-DD format. Defaults to today.
+    """
+    target_date = _normalise_date(date, _today_iso())
+    cache_key = TTLCache.make_key("get_respiration", {"date": target_date})
+
+    async def fetch() -> RespirationSummary:
+        client = _get_garmin()
+        raw = await client.call("get_respiration_data", target_date)
+        return _parse_respiration(raw, target_date)
+
+    result: RespirationSummary = await _cache.get_or_compute(cache_key, 3600, fetch)
+    return result
+
+
+@mcp.tool()
+async def get_weekly_summary(
+    metric: str,
+    weeks: int = 4,
+    end_date: str | None = None,
+) -> WeeklySummary:
+    """Weekly aggregates for a single metric.
+
+    Args:
+        metric: One of "steps", "stress", or "intensity_minutes".
+        weeks: How many recent weeks to include. Capped at 12.
+        end_date: End of the window in YYYY-MM-DD format. Defaults to today.
+    """
+    metric_norm = metric.strip().lower()
+    if metric_norm not in {"steps", "stress", "intensity_minutes"}:
+        raise ValueError("metric must be one of: 'steps', 'stress', 'intensity_minutes'")
+    weeks = max(1, min(12, weeks))
+    end = _normalise_date(end_date, _today_iso())
+    cache_key = TTLCache.make_key(
+        "get_weekly_summary", {"metric": metric_norm, "weeks": weeks, "end": end}
+    )
+
+    async def fetch() -> WeeklySummary:
+        client = _get_garmin()
+        if metric_norm == "intensity_minutes":
+            start = (Date.fromisoformat(end) - timedelta(weeks=weeks)).isoformat()
+            raw = await client.call("get_weekly_intensity_minutes", start, end)
+        elif metric_norm == "steps":
+            raw = await client.call("get_weekly_steps", end, weeks)
+        else:  # stress
+            raw = await client.call("get_weekly_stress", end, weeks)
+        return _parse_weekly_summary(metric_norm, raw)
+
+    result: WeeklySummary = await _cache.get_or_compute(cache_key, 3600, fetch)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Garmin response parsers
 #
@@ -783,6 +960,231 @@ def _minutes_or_none(seconds: Any) -> int | None:
     if secs is None:
         return None
     return secs // 60
+
+
+def _first_dict(raw: Any) -> dict[str, Any] | None:
+    """Garmin sometimes returns a single dict and sometimes a 1-element list."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+        return raw[0]
+    return None
+
+
+def _parse_training_readiness(raw: Any, date: str) -> TrainingReadiness:
+    payload = _first_dict(raw)
+    if payload is None:
+        return TrainingReadiness(date=date, note="No training readiness data for this date.")
+
+    factors: list[TrainingReadinessFactor] = []
+    for label, key in (
+        ("Sleep", "sleepScoreFactorFeedback"),
+        ("Recovery", "recoveryTimeFactorFeedback"),
+        ("HRV", "hrvFactorFeedback"),
+        ("Stress", "stressHistoryFactorFeedback"),
+        ("Acute load", "acuteLoadFactorFeedback"),
+        ("Sleep history", "sleepHistoryFactorFeedback"),
+    ):
+        feedback = _opt_str(payload.get(key))
+        if feedback:
+            factors.append(TrainingReadinessFactor(name=label, feedback=feedback))
+
+    return TrainingReadiness(
+        date=_opt_str(payload.get("calendarDate")) or date,
+        score=_opt_int(payload.get("score")),
+        level=_opt_str(payload.get("level")),
+        feedback_short=_opt_str(payload.get("feedbackShort")),
+        feedback_long=_opt_str(payload.get("feedbackLong")),
+        sleep_score=_opt_int(payload.get("sleepScore")),
+        sleep_history_score=_opt_int(payload.get("sleepHistoryFactorPercent")),
+        recovery_time_hours=_opt_int(payload.get("recoveryTime")),
+        acute_load=_opt_float(payload.get("acuteLoad")),
+        hrv_status=_opt_str(payload.get("hrvStatus")),
+        stress_history=_opt_int(payload.get("stressHistoryFactorPercent")),
+        factors=factors,
+    )
+
+
+def _parse_fitness_metrics(
+    date: str,
+    max_metrics: Any,
+    race: Any,
+) -> FitnessMetrics:
+    vo2_run: float | None = None
+    vo2_cycle: float | None = None
+    fitness_age: float | None = None
+
+    # get_max_metrics returns either a list of {generic, cycling, ...} or a dict.
+    max_payload = _first_dict(max_metrics)
+    if max_payload is not None:
+        generic = max_payload.get("generic") or {}
+        cycling = max_payload.get("cycling") or {}
+        heat = max_payload.get("heatAltitudeAcclimation") or {}
+        if isinstance(generic, dict):
+            vo2_run = _opt_float(generic.get("vo2MaxPreciseValue") or generic.get("vo2MaxValue"))
+            fitness_age = _opt_float(generic.get("fitnessAge"))
+        if isinstance(cycling, dict):
+            vo2_cycle = _opt_float(cycling.get("vo2MaxPreciseValue") or cycling.get("vo2MaxValue"))
+        if fitness_age is None and isinstance(heat, dict):
+            fitness_age = _opt_float(heat.get("fitnessAge"))
+
+    predictions: list[RacePrediction] = []
+    race_payload: dict[str, Any] | None
+    if isinstance(race, list) and race:
+        race_payload = race[0] if isinstance(race[0], dict) else None
+    elif isinstance(race, dict):
+        race_payload = race
+    else:
+        race_payload = None
+    if race_payload is not None:
+        for label, key in (
+            ("5k", "time5K"),
+            ("10k", "time10K"),
+            ("halfMarathon", "timeHalfMarathon"),
+            ("marathon", "timeMarathon"),
+        ):
+            value = _opt_int(race_payload.get(key))
+            if value is not None:
+                predictions.append(RacePrediction(distance=label, seconds=value))
+
+    note: str | None = None
+    if max_payload is None and not predictions:
+        note = "No fitness metrics recorded yet. Wear your watch for runs/rides."
+
+    return FitnessMetrics(
+        date=date,
+        vo2_max_running=vo2_run,
+        vo2_max_cycling=vo2_cycle,
+        fitness_age=fitness_age,
+        race_predictions=predictions,
+        note=note,
+    )
+
+
+def _parse_personal_records(raw: Any) -> PersonalRecords:
+    if not isinstance(raw, list):
+        return PersonalRecords(records=[], count=0)
+    out: list[PersonalRecord] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        raw_value = _opt_float(entry.get("value"))
+        type_id = _opt_int(entry.get("typeId")) or 0
+        # Garmin uses different value units per record type; time-based records
+        # report seconds, distance-based records report meters.
+        value_seconds: float | None = None
+        value_meters: float | None = None
+        if 1 <= type_id <= 10:
+            # 1-3 are time PRs for 1K/5K/10K; 4 is half marathon; 5 is marathon;
+            # 7 is longest distance; values for time PRs are seconds.
+            if type_id in (1, 2, 3, 4, 5, 6):
+                value_seconds = raw_value
+            else:
+                value_meters = raw_value
+        out.append(
+            PersonalRecord(
+                record_type=_opt_str(entry.get("typeLabel"))
+                or _opt_str(entry.get("activityType"))
+                or f"type_{type_id}",
+                value_seconds=value_seconds,
+                value_meters=value_meters,
+                raw_value=raw_value,
+                activity_type=_opt_str(entry.get("activityType")),
+                record_date=_opt_str(entry.get("prStartTimeGmtFormatted"))
+                or _opt_str(entry.get("startTimeLocal")),
+                activity_id=_opt_str(entry.get("activityId")),
+            )
+        )
+    return PersonalRecords(records=out, count=len(out))
+
+
+def _parse_body_composition(raw: Any) -> BodyCompositionTrend:
+    if not isinstance(raw, dict):
+        return BodyCompositionTrend(note="No body composition data recorded.")
+
+    daily_list = raw.get("dateWeightList") or raw.get("totalAverage") or []
+    if isinstance(daily_list, dict):
+        daily_list = [daily_list]
+    if not isinstance(daily_list, list):
+        daily_list = []
+
+    days: list[BodyCompositionDay] = []
+    for entry in daily_list:
+        if not isinstance(entry, dict):
+            continue
+        # Garmin weights are reported in grams; convert to kg.
+        weight_g = _opt_float(entry.get("weight"))
+        weight_kg = weight_g / 1000.0 if weight_g is not None else None
+        muscle_g = _opt_float(entry.get("muscleMass"))
+        muscle_kg = muscle_g / 1000.0 if muscle_g is not None else None
+        bone_g = _opt_float(entry.get("boneMass"))
+        bone_kg = bone_g / 1000.0 if bone_g is not None else None
+        days.append(
+            BodyCompositionDay(
+                date=_opt_str(entry.get("calendarDate"))
+                or _seconds_to_iso_local(_opt_int(entry.get("date")))
+                or "",
+                weight_kg=weight_kg,
+                body_fat_percent=_opt_float(entry.get("bodyFat")),
+                body_water_percent=_opt_float(entry.get("bodyWater")),
+                muscle_mass_kg=muscle_kg,
+                bone_mass_kg=bone_kg,
+                bmi=_opt_float(entry.get("bmi")),
+            )
+        )
+
+    weights = [d.weight_kg for d in days if d.weight_kg is not None]
+    return BodyCompositionTrend(
+        days=days,
+        latest_weight_kg=weights[-1] if weights else None,
+        avg_weight_kg=sum(weights) / len(weights) if weights else None,
+        note=None if days else "No body composition data recorded in this window.",
+    )
+
+
+def _parse_respiration(raw: Any, date: str) -> RespirationSummary:
+    if not isinstance(raw, dict):
+        return RespirationSummary(date=date, note="No respiration data recorded.")
+    summary = RespirationSummary(
+        date=_opt_str(raw.get("calendarDate")) or date,
+        avg_breaths_per_min=_opt_float(raw.get("avgRespirationValue")),
+        lowest_breaths_per_min=_opt_float(raw.get("lowestRespirationValue")),
+        highest_breaths_per_min=_opt_float(raw.get("highestRespirationValue")),
+        avg_sleep_breaths_per_min=_opt_float(raw.get("avgSleepRespirationValue")),
+        avg_waking_breaths_per_min=_opt_float(raw.get("avgWakingRespirationValue")),
+    )
+    if summary.avg_breaths_per_min is None:
+        summary = summary.model_copy(update={"note": "No respiration data recorded for this date."})
+    return summary
+
+
+def _parse_weekly_summary(metric: str, raw: Any) -> WeeklySummary:
+    if not isinstance(raw, list) or not raw:
+        return WeeklySummary(metric=metric, note="No data recorded for this window.")
+
+    buckets: list[WeeklyBucket] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        week_start = (
+            _opt_str(entry.get("calendarDate"))
+            or _opt_str(entry.get("weekStart"))
+            or _opt_str(entry.get("startDate"))
+            or ""
+        )
+        if metric == "steps":
+            value = _opt_float(entry.get("totalSteps") or entry.get("averageSteps"))
+        elif metric == "stress":
+            value = _opt_float(entry.get("value") or entry.get("averageStressLevel"))
+        else:  # intensity_minutes
+            mod = _opt_float(entry.get("weeklyModerate") or entry.get("moderateValue")) or 0.0
+            vig = _opt_float(entry.get("weeklyVigorous") or entry.get("vigorousValue")) or 0.0
+            value = mod + vig * 2  # Garmin convention: vigorous counts double
+        buckets.append(WeeklyBucket(week_start=week_start, value=value))
+
+    values = [b.value for b in buckets if b.value is not None]
+    avg = sum(values) / len(values) if values else None
+    return WeeklySummary(metric=metric, weeks=buckets, avg_value=avg)
 
 
 # ---------------------------------------------------------------------------

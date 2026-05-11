@@ -19,11 +19,17 @@ Single-user, read-only. Two ways to run it:
 | `get_recent_activities`    | List of recent activities with type, duration, distance, average heart rate. |
 | `get_activity_details`     | Full metrics for one activity, including splits, HR zones, and power.        |
 | `get_training_load`        | Daily training load with acute (ATL), chronic (CTL), and current status.     |
+| `get_training_readiness`   | Daily readiness score 0-100 with contributing factors (sleep, HRV, recovery).|
 | `get_hrv_status`           | Current HRV status, baseline range, and the last 7 nights of readings.       |
 | `get_body_battery`         | Body battery values across the day with min, max, charged, drained.          |
 | `get_steps_and_calories`   | Daily step count, distance, calories, floors, and intensity minutes.         |
 | `get_resting_heart_rate`   | Resting heart rate trend and average over the requested window.              |
 | `get_stress`               | Stress levels across the day and time-in-zone breakdown.                     |
+| `get_respiration`          | Daily respiration rate: average, min, max, sleep vs waking.                  |
+| `get_fitness_metrics`      | VO2 max (running/cycling), fitness age, and predicted 5K/10K/half/marathon.  |
+| `get_personal_records`     | Personal records across activity types (fastest 1K/5K, longest run, etc.).   |
+| `get_body_composition`     | Weight, body fat, and muscle-mass trend over recent days.                    |
+| `get_weekly_summary`       | Weekly aggregates for steps, stress, or intensity minutes.                   |
 
 Every response is a Pydantic model serialised to JSON, with `null` for fields Garmin did not record.
 
