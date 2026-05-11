@@ -60,8 +60,7 @@ RACE_PREDICTIONS_PAYLOAD: list[dict[str, Any]] = [
 
 PERSONAL_RECORDS_PAYLOAD: list[dict[str, Any]] = [
     {
-        "typeId": 2,
-        "typeLabel": "5k",
+        "typeId": 3,
         "value": 1320.0,
         "activityType": "running",
         "prStartTimeGmtFormatted": "2026-04-15 06:30:00",
@@ -69,11 +68,24 @@ PERSONAL_RECORDS_PAYLOAD: list[dict[str, Any]] = [
     },
     {
         "typeId": 7,
-        "typeLabel": "longestRun",
         "value": 21500.0,
         "activityType": "running",
         "prStartTimeGmtFormatted": "2026-03-02 07:15:00",
         "activityId": 8877665544,
+    },
+    {
+        "typeId": 12,
+        "value": 20178.0,
+        "activityType": None,
+        "prStartTimeGmtFormatted": "2025-09-13 05:00:00",
+        "activityId": 0,
+    },
+    {
+        "typeId": 99,
+        "value": 42.0,
+        "activityType": None,
+        "prStartTimeGmtFormatted": "2026-05-01 05:00:00",
+        "activityId": 0,
     },
 ]
 
@@ -172,11 +184,27 @@ async def test_personal_records_parses() -> None:
     )
     result = await server_module.get_personal_records()
     assert isinstance(result, PersonalRecords)
-    assert result.count == 2
-    five_k = next(r for r in result.records if r.record_type == "5k")
+    assert result.count == 4
+
+    five_k = next(r for r in result.records if r.record_type == "fastest_5k")
+    assert five_k.unit == "seconds"
     assert five_k.value_seconds == 1320.0
-    longest = next(r for r in result.records if r.record_type == "longestRun")
+    assert five_k.value_meters is None
+
+    longest = next(r for r in result.records if r.record_type == "longest_run")
+    assert longest.unit == "meters"
     assert longest.value_meters == 21500.0
+    assert longest.value_seconds is None
+
+    steps = next(r for r in result.records if r.record_type == "most_steps_in_a_day")
+    assert steps.unit == "count"
+    assert steps.raw_value == 20178.0
+    assert steps.value_seconds is None and steps.value_meters is None
+
+    # Unknown typeId falls back to `type_<id>` with no unit.
+    unknown = next(r for r in result.records if r.type_id == 99)
+    assert unknown.record_type == "type_99"
+    assert unknown.unit is None
 
 
 @pytest.mark.asyncio

@@ -234,14 +234,21 @@ class FitnessMetrics(_StrictBase):
 
 
 class PersonalRecord(_StrictBase):
-    record_type: str = Field(description="Garmin label like '1k', '5k', 'longestRun', etc.")
-    value_seconds: float | None = Field(
-        default=None, description="Time-based PR value in seconds, if applicable."
+    record_type: str = Field(
+        description="Human-readable label like 'fastest_5k', 'longest_run', 'most_steps_in_a_day'."
     )
-    value_meters: float | None = Field(
-        default=None, description="Distance-based PR value in meters, if applicable."
+    unit: str | None = Field(
+        default=None,
+        description="What `raw_value` represents: 'seconds', 'meters', 'count', or 'days'.",
     )
     raw_value: float | None = Field(default=None, description="Raw value Garmin reported.")
+    value_seconds: float | None = Field(
+        default=None, description="Same as raw_value when unit='seconds', else null."
+    )
+    value_meters: float | None = Field(
+        default=None, description="Same as raw_value when unit='meters', else null."
+    )
+    type_id: int | None = Field(default=None, description="Garmin's internal record type id.")
     activity_type: str | None = None
     record_date: str | None = None
     activity_id: str | None = None

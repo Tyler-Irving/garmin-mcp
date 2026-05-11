@@ -1061,6 +1061,27 @@ def _parse_fitness_metrics(
     )
 
 
+# Garmin's personal-record typeId enum is not documented in the upstream
+# library. Mapping observed via real-account inspection. Tuple is (label, unit).
+_PR_TYPE_MAP: dict[int, tuple[str, str]] = {
+    1: ("fastest_1k", "seconds"),
+    2: ("fastest_1mi", "seconds"),
+    3: ("fastest_5k", "seconds"),
+    4: ("fastest_10k", "seconds"),
+    5: ("fastest_half_marathon", "seconds"),
+    6: ("fastest_marathon", "seconds"),
+    7: ("longest_run", "meters"),
+    8: ("longest_ride", "meters"),
+    9: ("longest_swim", "meters"),
+    10: ("most_ascent", "meters"),
+    12: ("most_steps_in_a_day", "count"),
+    13: ("most_steps_in_a_week", "count"),
+    14: ("most_steps_in_a_month", "count"),
+    15: ("longest_goal_streak", "days"),
+    16: ("longest_active_streak", "days"),
+}
+
+
 def _parse_personal_records(raw: Any) -> PersonalRecords:
     if not isinstance(raw, list):
         return PersonalRecords(records=[], count=0)
@@ -1069,26 +1090,30 @@ def _parse_personal_records(raw: Any) -> PersonalRecords:
         if not isinstance(entry, dict):
             continue
         raw_value = _opt_float(entry.get("value"))
-        type_id = _opt_int(entry.get("typeId")) or 0
-        # Garmin uses different value units per record type; time-based records
-        # report seconds, distance-based records report meters.
-        value_seconds: float | None = None
-        value_meters: float | None = None
-        if 1 <= type_id <= 10:
-            # 1-3 are time PRs for 1K/5K/10K; 4 is half marathon; 5 is marathon;
-            # 7 is longest distance; values for time PRs are seconds.
-            if type_id in (1, 2, 3, 4, 5, 6):
-                value_seconds = raw_value
-            else:
-                value_meters = raw_value
+        type_id = _opt_int(entry.get("typeId"))
+
+        label: str | None = None
+        unit: str | None = None
+        if type_id is not None and type_id in _PR_TYPE_MAP:
+            label, unit = _PR_TYPE_MAP[type_id]
+        if label is None:
+            label = (
+                _opt_str(entry.get("prTypeLabelKey"))
+                or _opt_str(entry.get("activityType"))
+                or (f"type_{type_id}" if type_id is not None else "unknown")
+            )
+
+        value_seconds = raw_value if unit == "seconds" else None
+        value_meters = raw_value if unit == "meters" else None
+
         out.append(
             PersonalRecord(
-                record_type=_opt_str(entry.get("typeLabel"))
-                or _opt_str(entry.get("activityType"))
-                or f"type_{type_id}",
+                record_type=label,
+                unit=unit,
+                raw_value=raw_value,
                 value_seconds=value_seconds,
                 value_meters=value_meters,
-                raw_value=raw_value,
+                type_id=type_id,
                 activity_type=_opt_str(entry.get("activityType")),
                 record_date=_opt_str(entry.get("prStartTimeGmtFormatted"))
                 or _opt_str(entry.get("startTimeLocal")),
