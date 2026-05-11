@@ -124,6 +124,19 @@ The server is its own OAuth 2.1 authorisation server. When you add the connector
 
 This is intentionally minimal: one password, one user. Anyone with the password can read your Garmin data.
 
+## Data availability
+
+Garmin returns sparse data depending on which watch you wear, how long you've worn it, and what features your model supports. Every tool follows the same convention: when a field isn't recorded, the response carries `null` for that field (and often a `note` explaining the absence) rather than erroring.
+
+A few specific cases worth knowing about:
+
+- **`get_training_load.current_status = "NO_STATUS_2"`** and **`get_hrv_status.status = "NONE"`** mean Garmin doesn't have enough recent activity history to compute the metric. They fill in naturally after ~7 consecutive days of sustained activity or watch wear.
+- **VO2 max only updates after qualifying activities** (runs, rides). `get_fitness_metrics` walks back up to 7 days to surface your most recent reading rather than returning null on a rest day.
+- **`get_stress` zone-minute breakdown** (`rest_minutes`, `low_minutes`, etc.) can come back null on partial-data days even though `avg_stress` and the timeline are populated.
+- **HRV, training readiness, endurance score, hill score, and fitness age** all require a recent compatible watch (Fenix 6+ / Forerunner 245+ / similar). Older watches simply won't report them.
+
+If a tool seems to return less than you'd expect, check the same metric in the Garmin Connect app or on connect.garmin.com for the same date. If Garmin shows it there and we return null, that's a parser bug — file an issue with the date and the field name and we can usually map it in a follow-up release.
+
 ## Security caveats
 
 * This is single-user software. Don't run it as a shared service for multiple Garmin accounts — you'd be holding other people's credentials, and it likely violates Garmin's ToS.
