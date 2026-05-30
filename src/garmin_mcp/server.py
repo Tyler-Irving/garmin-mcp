@@ -640,7 +640,8 @@ def _strength_token(payload: dict[str, Any]) -> str:
     """
     if not JWT_SECRET:
         return ""
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    # Domain-separate from access-token signing that also uses JWT_SECRET.
+    canonical = "strength-workout-v1:" + json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hmac.new(JWT_SECRET.encode(), canonical.encode(), hashlib.sha256).hexdigest()[:16]
 
 

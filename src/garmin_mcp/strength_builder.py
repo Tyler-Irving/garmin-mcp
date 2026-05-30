@@ -223,7 +223,11 @@ def summarize(spec: StrengthWorkoutSpec) -> str:
         names = " + ".join(
             (s.label or s.exercise_name)
             + (f" {s.reps} reps" if s.reps is not None else f" {s.seconds}s")
-            + (f" @ {s.weight:g}{s.weight_unit[:2]}" if s.weight is not None else "")
+            + (
+                f" @ {s.weight:g}{'kg' if s.weight_unit == 'kilogram' else 'lb'}"
+                if s.weight is not None
+                else ""
+            )
             for s in block.exercises
         )
         tag = "superset" if len(block.exercises) > 1 else "exercise"
