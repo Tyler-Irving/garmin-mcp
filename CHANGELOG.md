@@ -4,6 +4,16 @@ All notable changes to garmin-mcp are documented here. The project uses semantic
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-05-30
+
+### Added
+
+- **Automated releases via PyPI Trusted Publishing (OIDC).** A GitHub Actions workflow (`.github/workflows/publish.yml`) runs the test/lint/type gate, builds the sdist + wheel, and publishes to PyPI on a published GitHub Release — with no stored API token. Includes a guard that the release tag matches the package version.
+
+### Docs
+
+- Fixed the CHANGELOG version-compare links left stale by the 0.3.0 stamp.
+
 ## [0.3.0] — 2026-05-30
 
 ### Added
@@ -85,7 +95,8 @@ Six new tools, taking the total from 9 to 15:
 - `garminconnect` wrapper with persistent session tokens, transparent re-auth, exponential-backoff retry, and 1-req/2s rate limiting.
 - Saved tokens default to the user's platform cache directory (`~/.cache/garmin-mcp/garth/` on Linux, equivalent on macOS / Windows). `GARMIN_TOKEN_DIR` env var overrides for Cloud Run.
 
-[Unreleased]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.2.1...v0.2.2
