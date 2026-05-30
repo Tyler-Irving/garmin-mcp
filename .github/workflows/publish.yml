@@ -1,0 +1,123 @@
+name: Publish to PyPI
+
+# Publishes garmin-mcp to PyPI via PyPA Trusted Publishing (OIDC).
+# No stored API token, no username/password, no ~/.pypirc.
+#
+# Trigger: a *published* GitHub Release. The Releases UI is the human gate.
+# To cut a release:
+#   1. Bump __version__ in src/garmin_mcp/__init__.py (the single source of
+#      truth; [tool.hatch.version] reads it, so the build version is dynamic).
+#   2. Commit + push to main.
+#   3. Create a GitHub Release whose tag is v<version> (e.g. v0.4.0) pointing
+#      at that commit, and click Publish. That fires this workflow.
+#
+# Why `release: published` over `push: tags: ['v*']`:
+#   - A Release is an explicit, reversible, UI-driven human action (draft
+#     state, editable notes), so a stray local `git push --tags` cannot ship
+#     to PyPI by itself.
+#   - It pairs naturally with the `pypi` deployment environment's protection
+#     rules (required reviewers / wait timer) for a second gate.
+#   The tag-push alternative (`on: push: tags: ['v*']`) is simpler and avoids
+#   creating a Release, but any pushed v* tag publishes immediately with no
+#   review surface, so it is not used here.
+on:
+  release:
+    types: [published]
+
+# Never run two publishes for the same release ref concurrently, and do NOT
+# cancel an in-flight publish (cancelling mid-upload could leave a partial
+# release), so cancel-in-progress is false.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least privilege by default; each job opts into exactly what it needs.
+permissions: {}
+
+jobs:
+  build:
+    name: Test, lint, type-check & build distributions
+    runs-on: ubuntu-latest
+    # The build job only reads code and emits artifacts. No id-token here:
+    # OIDC must never be available to the job that runs build/test code.
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies (frozen lockfile, with dev extras)
+        run: uv sync --frozen --extra dev
+
+      - name: Run tests
+        run: uv run pytest
+
+      - name: Lint (ruff)
+        run: uv run ruff check src tests
+
+      - name: Type-check (mypy --strict)
+        run: uv run mypy --strict src/garmin_mcp
+
+      - name: Verify release tag matches package version
+        # The build version is dynamic from src/garmin_mcp/__init__.py, NOT
+        # from the git tag. Guard against a tag/version drift that would either
+        # publish the wrong version or be rejected by PyPI as a duplicate.
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          PKG_VERSION="$(uv run python -c 'import garmin_mcp; print(garmin_mcp.__version__)')"
+          echo "Release tag: ${RELEASE_TAG}"
+          echo "Package version (src/garmin_mcp/__init__.py): ${PKG_VERSION}"
+          if [ "${RELEASE_TAG}" != "v${PKG_VERSION}" ]; then
+            echo "::error::Release tag '${RELEASE_TAG}' does not match 'v${PKG_VERSION}'. Bump __version__ to match the tag (tag must be v<version>)."
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Verify built metadata
+        run: uvx twine check dist/*
+
+      - name: Upload distributions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI (trusted publishing)
+    needs: build
+    runs-on: ubuntu-latest
+    # Don't let a fork attempt to publish under this repo's PyPI identity.
+    if: github.repository == 'Tyler-Irving/garmin-mcp'
+    # The deployment environment lets you attach protection rules (required
+    # reviewers, wait timer) in repo Settings -> Environments -> pypi, and is
+    # the Environment name the PyPI trusted-publisher config must match.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/garmin-mcp/
+    # OIDC: id-token: write lets the publish action mint a short-lived token
+    # that PyPI exchanges for upload rights. This scope lives ONLY in this job.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Download distributions artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No `with: password:` / no PYPI_API_TOKEN: credentials are minted via
+        # OIDC. The action uploads everything in dist/ (sdist + wheel) by
+        # default (packages-dir: dist/) and emits PEP 740 attestations.

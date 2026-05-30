@@ -332,7 +332,6 @@ wheels = [
 
 [[package]]
 name = "garmin-mcp"
-version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
