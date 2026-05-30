@@ -16,3 +16,7 @@ build/
 .vscode/
 *.log
 claude-progress.txt
+
+# Personal data — never commit
+tmp/
+Training_Program_*.md
