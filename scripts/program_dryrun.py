@@ -16,13 +16,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from garmin_mcp.exercise_resolver import resolve_exercise  # noqa: E402
-from garmin_mcp.strength_builder import (  # noqa: E402
+from garmin_mcp.exercise_resolver import resolve_exercise
+from garmin_mcp.strength_builder import (
     BlockSpec,
     SetSpec,
     StrengthWorkoutSpec,
     build_strength_workout,
-    summarize,
 )
 
 # Each block: (sets, [ (free_text, reps|None, seconds|None), ... ]).

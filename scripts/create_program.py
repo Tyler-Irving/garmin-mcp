@@ -22,9 +22,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from garmin_mcp.exercise_resolver import resolve_exercise  # noqa: E402
-from garmin_mcp.paths import default_token_dir  # noqa: E402
-from garmin_mcp.strength_builder import (  # noqa: E402
+from garmin_mcp.exercise_resolver import resolve_exercise
+from garmin_mcp.paths import default_token_dir
+from garmin_mcp.strength_builder import (
     BlockSpec,
     SetSpec,
     StrengthWorkoutSpec,
@@ -193,6 +193,36 @@ def build_specs() -> tuple[list[StrengthWorkoutSpec], list[str]]:
     return specs, warnings
 
 
+def _print_warnings(warnings: list[str]) -> None:
+    if warnings:
+        print(f"\n{len(warnings)} imperfect matches (the note carries the real name):")
+        for w in warnings:
+            print(f"  • {w}")
+
+
+def _blank_steps(wj: dict) -> list[int]:
+    """Step orders of interval steps Garmin returned with a blank exerciseName.
+
+    Garmin returns HTTP 200 but silently blanks unknown / bare-category-name
+    exercises; this is the per-step check the day-1-only validation lacked.
+    """
+    blanks: list[int] = []
+
+    def walk(steps: list[dict]) -> None:
+        for s in steps:
+            if s.get("type") == "RepeatGroupDTO":
+                walk(s.get("workoutSteps", []))
+            elif (s.get("stepType") or {}).get("stepTypeKey") == "interval" and not s.get(
+                "exerciseName"
+            ):
+                order = s.get("stepOrder")
+                blanks.append(order if isinstance(order, int) else -1)
+
+    for seg in wj.get("workoutSegments", []):
+        walk(seg.get("workoutSteps", []))
+    return blanks
+
+
 def preview(specs: list[StrengthWorkoutSpec], warnings: list[str]) -> None:
     for spec in specs:
         print("\n" + summarize(spec))
@@ -201,10 +231,7 @@ def preview(specs: list[StrengthWorkoutSpec], warnings: list[str]) -> None:
                 if s.note and (s.label or "").lower() not in s.exercise_name.lower():
                     print(f"      note[{s.exercise_name}]: {s.note}")
     print(f"\n{'=' * 60}\n{len(specs)} workouts ready.")
-    if warnings:
-        print(f"{len(warnings)} imperfect matches (note carries the real name):")
-        for w in warnings:
-            print(f"  • {w}")
+    _print_warnings(warnings)
 
 
 async def create(specs: list[StrengthWorkoutSpec]) -> None:
@@ -217,25 +244,33 @@ async def create(specs: list[StrengthWorkoutSpec]) -> None:
         allow_writes=True,
     )
     created: list[tuple[str, str]] = []
-    for i, spec in enumerate(specs):
+    blanked: list[str] = []
+    for spec in specs:
         payload = build_strength_workout(spec)
         result = await client.call("upload_workout", payload)
         wid = str(result.get("workoutId", "?"))
         print(f"[created] {spec.name}  ->  workoutId {wid}")
         created.append((spec.name, wid))
 
-        if i == 0:  # validate the first round-trips before uploading the rest
-            check = await client.call("get_workout_by_id", wid)
-            n_steps = sum(len(s.get("workoutSteps", [])) for s in check.get("workoutSegments", []))
-            sport = (check.get("sportType") or {}).get("sportTypeKey")
-            print(f"[validate] re-fetched {wid}: sport={sport}, {n_steps} top-level steps")
-            if sport != "strength_training" or n_steps == 0:
-                raise SystemExit("Day-1 validation failed — stopping before the rest.")
+        # Validate EVERY day's round-trip: right sport, and no per-step blanking
+        # (an HTTP 200 can still silently blank an unknown/bare-category name).
+        check = await client.call("get_workout_by_id", wid)
+        sport = (check.get("sportType") or {}).get("sportTypeKey")
+        blanks = _blank_steps(check)
+        print(f"[validate] {wid}: sport={sport}, blank steps={blanks or 'none'}")
+        if sport != "strength_training":
+            raise SystemExit(f"{spec.name}: unexpected sport {sport!r} — stopping.")
+        if blanks:
+            blanked.append(f"{spec.name} ({wid}): steps {blanks}")
         await asyncio.sleep(4)  # be gentle: avoid the rapid-write 429 block
 
     print(f"\nCreated {len(created)} workouts:")
     for name, wid in created:
         print(f"  {wid}  {name}")
+    if blanked:
+        print("\nWARNING — Garmin blanked some steps (review/fix in Garmin Connect):")
+        for b in blanked:
+            print(f"  • {b}")
     print(
         "\nThey are in your Garmin Connect library. Open Garmin Connect on your "
         "phone near the watch to sync; they'll appear under Training > Workouts."
@@ -245,8 +280,12 @@ async def create(specs: list[StrengthWorkoutSpec]) -> None:
 def main() -> None:
     specs, warnings = build_specs()
     if "--create" in sys.argv:
-        if not os.getenv("GARMIN_WRITE_ENABLED"):
+        # Mirror server.py's WRITE_ENABLED parse: a bare truthiness check would
+        # treat the explicit opt-outs "0"/"false"/"no" as enabled.
+        if os.getenv("GARMIN_WRITE_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
             raise SystemExit("Refusing to create: set GARMIN_WRITE_ENABLED=1 to enable writes.")
+        # Surface imperfect matches on the WRITE path too (preview already does).
+        _print_warnings(warnings)
         asyncio.run(create(specs))
     else:
         preview(specs, warnings)
