@@ -150,6 +150,12 @@ def _index() -> list[tuple[str, str, list[str]]]:
     return out
 
 
+@lru_cache(maxsize=1)
+def valid_exercise_names() -> frozenset[str]:
+    """All exerciseName enums Garmin's catalog knows (for validating overrides)."""
+    return frozenset(name for _cat, name, _toks in _index())
+
+
 def _confidence(score: float) -> Confidence:
     if score >= 0.99:
         return "exact"

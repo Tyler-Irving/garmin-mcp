@@ -298,6 +298,77 @@ class WeeklySummary(_StrictBase):
     note: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Strength workout creation (write) — inputs
+# ---------------------------------------------------------------------------
+
+
+class StrengthExerciseInput(BaseModel):
+    """One exercise in a block. ``name`` is free text resolved to Garmin's
+    catalog; pass ``exercise_name``+``category`` to override the resolver."""
+
+    name: str = Field(description="Exercise name, free text, e.g. 'Incline DB Press'.")
+    reps: int | None = Field(default=None, description="Target reps; omit if time-based.")
+    seconds: int | None = Field(default=None, description="Hold/work seconds (planks, carries).")
+    weight: float | None = Field(
+        default=None, description="Optional load; omit to log on the watch."
+    )
+    weight_unit: str = Field(default="pound", description="'pound' or 'kilogram'.")
+    note: str | None = Field(
+        default=None, description="Step note shown on the watch (e.g. rep range, RPE)."
+    )
+    exercise_name: str | None = Field(
+        default=None, description="Explicit Garmin exerciseName enum, bypasses the resolver."
+    )
+    category: str | None = Field(default=None, description="Explicit Garmin category enum.")
+
+
+class StrengthBlockInput(BaseModel):
+    """A repeat group: ``sets`` rounds of ``exercises`` (>1 exercise = superset)."""
+
+    sets: int = Field(description="Number of sets (repeat-group iterations).")
+    exercises: list[StrengthExerciseInput]
+
+
+class StrengthWorkoutInput(BaseModel):
+    name: str = Field(description="Workout name shown in Garmin Connect.")
+    blocks: list[StrengthBlockInput]
+    include_warmup: bool = Field(default=True, description="Prepend a lap-button warmup step.")
+
+
+# ---------------------------------------------------------------------------
+# Strength workout creation (write) — outputs
+# ---------------------------------------------------------------------------
+
+
+class ResolvedExerciseInfo(_StrictBase):
+    query: str
+    category: str | None = None
+    exercise_name: str | None = None
+    confidence: str
+    matched_label: str | None = None
+
+
+class StrengthWorkoutPreview(_StrictBase):
+    name: str
+    summary: str = Field(description="Human-readable block-by-block summary.")
+    exercises: list[ResolvedExerciseInfo]
+    warnings: list[str] = Field(
+        default_factory=list, description="Exercises that did not resolve cleanly."
+    )
+    confirmation_token: str = Field(description="Pass to create_strength_workout to confirm.")
+
+
+class StrengthWorkoutCreated(_StrictBase):
+    workout_id: str | None = None
+    name: str
+    status: str
+    verified: bool = Field(description="True if the upload round-tripped with no blank exercises.")
+    blank_steps: list[int] = Field(
+        default_factory=list, description="Step orders Garmin blanked (should be empty)."
+    )
+
+
 def _opt_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
