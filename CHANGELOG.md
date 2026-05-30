@@ -85,7 +85,8 @@ Six new tools, taking the total from 9 to 15:
 - `garminconnect` wrapper with persistent session tokens, transparent re-auth, exponential-backoff retry, and 1-req/2s rate limiting.
 - Saved tokens default to the user's platform cache directory (`~/.cache/garmin-mcp/garth/` on Linux, equivalent on macOS / Windows). `GARMIN_TOKEN_DIR` env var overrides for Cloud Run.
 
-[Unreleased]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.2.0...v0.2.1
