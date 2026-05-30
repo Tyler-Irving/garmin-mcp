@@ -4,7 +4,7 @@
 
 An [MCP](https://modelcontextprotocol.io/) server that exposes your Garmin Connect data to Claude as tools. Ask things like *"how did I sleep last night?"* or *"summarise my training load this week"* and Claude answers using your real Garmin data instead of you copy-pasting screenshots from the app.
 
-Single-user, read-only. Two ways to run it:
+Single-user, and read-only by default — with one **opt-in** write path for creating strength workouts (see [Write tools](#write-tools-opt-in)). Two ways to run it:
 
 | Mode                 | Where it runs           | Works with                       | Setup            |
 | -------------------- | ----------------------- | -------------------------------- | ---------------- |
@@ -154,7 +154,7 @@ If a tool seems to return less than you'd expect, check the same metric in the G
 * Garmin credentials and session tokens live on your local machine. Treat any password you put in a JSON config file as compromised in the long term — use a dedicated Garmin account if that's a concern.
 * The unofficial [`garminconnect`](https://github.com/cyberjunky/python-garminconnect) library can break when Garmin changes their internal API. If a tool starts returning empty data, check that package's changelog.
 * In HTTP mode, registered DCR clients and refresh tokens live in process memory and disappear on restart. Access tokens (JWTs) survive because they are stateless.
-* This server is read-only. It does not write activities, edit profile fields, or upload anything to Garmin.
+* Read-only by default. The one write path — creating strength workouts — is **off** unless you set `GARMIN_WRITE_ENABLED=1`, and is enforced at the client layer by a method allowlist (only `upload_workout` is writable; no activity upload, profile edits, deletes, or scheduling). Each create requires a preview→token confirmation, and in HTTP mode the server refuses to start with writes enabled but auth disabled.
 
 ## Project layout
 
@@ -169,12 +169,16 @@ garmin-mcp/
         ├── __init__.py
         ├── __main__.py        # python -m garmin_mcp -> CLI
         ├── cli.py             # argparse entry: stdio / serve / login
-        ├── server.py          # FastMCP app, tools, login UI
-        ├── garmin_client.py   # garminconnect wrapper
-        ├── auth.py            # OAuth 2.1 provider
-        ├── cache.py           # TTL cache
-        ├── paths.py           # token directory resolution
-        └── models.py          # Pydantic response models
+        ├── server.py             # FastMCP app, tools, login UI
+        ├── garmin_client.py      # garminconnect wrapper (read allowlist + write gate)
+        ├── auth.py               # OAuth 2.1 provider
+        ├── cache.py              # TTL cache
+        ├── paths.py              # token directory resolution
+        ├── exercise_resolver.py  # free-text exercise -> Garmin (category, name)
+        ├── strength_builder.py   # strength workout spec -> Garmin payload
+        ├── models.py             # Pydantic response models
+        └── data/
+            └── exercise_taxonomy.json   # Garmin's exercise catalog (resolver data)
 ```
 
 ## Contributing

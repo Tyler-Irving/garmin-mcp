@@ -4,6 +4,8 @@ All notable changes to garmin-mcp are documented here. The project uses semantic
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-30
+
 ### Added
 
 - **Strength workout creation** — the server's first write capability. `preview_strength_workout` resolves free-text exercises to Garmin's catalog (47 categories / 1510 exercises in `data/exercise_taxonomy.json`) and returns a summary + per-exercise confidence + a content-bound confirmation token, making no network call; `create_strength_workout` uploads to your Garmin Connect library after the token matches. Supports supersets (multiple exercises per repeat group), per-step notes (rep range / RPE), and reps- or time-based sets.

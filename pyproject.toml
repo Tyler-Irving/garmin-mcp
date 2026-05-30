@@ -1,6 +1,6 @@
 [project]
 name = "garmin-mcp"
-version = "0.2.3"
+dynamic = ["version"]
 description = "MCP server exposing Garmin Connect data to Claude."
 requires-python = ">=3.12"
 readme = "README.md"
@@ -48,6 +48,11 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Single source of truth for the version: garmin_mcp.__version__ (also used by
+# `garmin-mcp --version`). Avoids drift between pyproject and the package.
+[tool.hatch.version]
+path = "src/garmin_mcp/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/garmin_mcp"]
