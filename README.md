@@ -33,6 +33,17 @@ Single-user, read-only. Two ways to run it:
 
 Every response is a Pydantic model serialised to JSON, with `null` for fields Garmin did not record.
 
+### Write tools (opt-in)
+
+These **create** data in your Garmin account and are disabled unless you set `GARMIN_WRITE_ENABLED=1`. All other tools stay read-only regardless.
+
+| Tool                        | What it does                                                                  |
+| --------------------------- | ----------------------------------------------------------------------------- |
+| `preview_strength_workout`  | Assembles a strength workout and shows the resolved Garmin exercises, per-exercise confidence, warnings, and a confirmation token. **Makes no network call.** |
+| `create_strength_workout`   | Creates the workout in your Garmin Connect **library** after you pass the confirmation token from `preview_strength_workout`. |
+
+Workflow: call `preview_strength_workout`, review the resolved exercises, then pass its `confirmation_token` to `create_strength_workout` (the token is bound to the exact workout previewed). The created workout lands in your Garmin Connect library — to get it on the watch, open it in Garmin Connect, tap **Send to Device**, then sync. Free-text exercise names are matched against Garmin's catalog (`data/exercise_taxonomy.json`); names that don't map cleanly are flagged in the preview. Deleting and scheduling are intentionally **not** exposed.
+
 ## Quick start — Claude Desktop
 
 Requires Python 3.12+ and [`uv`](https://docs.astral.sh/uv/) (install with `curl -LsSf https://astral.sh/uv/install.sh | sh`).

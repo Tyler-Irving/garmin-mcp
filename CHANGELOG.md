@@ -4,6 +4,25 @@ All notable changes to garmin-mcp are documented here. The project uses semantic
 
 ## [Unreleased]
 
+### Added
+
+- **Strength workout creation** — the server's first write capability. `preview_strength_workout` resolves free-text exercises to Garmin's catalog (47 categories / 1510 exercises in `data/exercise_taxonomy.json`) and returns a summary + per-exercise confidence + a content-bound confirmation token, making no network call; `create_strength_workout` uploads to your Garmin Connect library after the token matches. Supports supersets (multiple exercises per repeat group), per-step notes (rep range / RPE), and reps- or time-based sets.
+- `GARMIN_WRITE_ENABLED` env flag (default off). Writes are also enforced at the client layer via a method allowlist — only `upload_workout` is writable, and only when enabled; everything else is read-only by enforcement, not convention.
+
+### Fixed
+
+- **Resolver mis-mapped some names at false-high confidence.** "Seated Leg Curl" resolved to an abdominal `CRUNCH` instead of a hamstring `LEG_CURL` (added a curated override). The junk-category discount (banded/cardio/plyo) was a dead 4th-place tie-breaker that never affected ranking or confidence — it now lowers the score directly.
+- **Write-path hardening.** Over HTTP the server refuses to start when `GARMIN_WRITE_ENABLED` is set but auth is disabled; the `confirm=True` dev bypass is honored only on local stdio (never HTTP); the confirmation token is compared with `hmac.compare_digest` (constant time).
+- **`weight_unit` is validated.** Any value other than exactly `kilogram` used to fall through to pounds; aliases (`kg`, `lb`, …) are normalised and unknown units rejected, so a 100 kg load can't silently upload as 100 lb.
+- **Explicit overrides honored when partial.** Passing `exercise_name` alone now bypasses the resolver (category derived from the catalog) instead of being silently ignored; a bare `category` with no `exercise_name` raises.
+- **Non-idempotent upload is no longer retried** on transient network errors (a blind retry of the POST could create a duplicate workout).
+- **Post-upload verification can't fail a successful create** — a malformed `stepOrder` in the re-fetched JSON is parsed defensively, and verification errors are caught rather than masking the created workout.
+
+### Notes
+
+- Garmin's workout-service silently blanks bare category-name exercises (e.g. `BENCH_PRESS`), so the resolver always prefers a specific leaf (e.g. `BARBELL_BENCH_PRESS`), and `create_strength_workout` re-fetches the upload to verify no exercise came back blank.
+- Created workouts land in the Connect **library**; reaching the watch needs a manual **Send to Device** + sync. Deleting/scheduling are intentionally not exposed.
+
 ## [0.2.3] — 2026-05-10
 
 ### Docs

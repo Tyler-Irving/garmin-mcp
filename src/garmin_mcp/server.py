@@ -14,6 +14,9 @@ process. See ``.env.example`` for the full list.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 import os
 import sys
@@ -41,6 +44,11 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 
 from garmin_mcp.auth import InvalidLoginError, SimpleOAuthProvider
 from garmin_mcp.cache import TTLCache
+from garmin_mcp.exercise_resolver import (
+    category_for_exercise,
+    resolve_exercise,
+    valid_exercise_names,
+)
 from garmin_mcp.garmin_client import GarminClient, GarminClientError
 from garmin_mcp.models import (
     Activity,
@@ -58,11 +66,15 @@ from garmin_mcp.models import (
     PersonalRecord,
     PersonalRecords,
     RacePrediction,
+    ResolvedExerciseInfo,
     RespirationSummary,
     RestingHeartRateTrend,
     RHRDay,
     SleepSummary,
     StepsAndCalories,
+    StrengthWorkoutCreated,
+    StrengthWorkoutInput,
+    StrengthWorkoutPreview,
     StressBucket,
     StressSummary,
     TrainingLoadDay,
@@ -76,6 +88,13 @@ from garmin_mcp.models import (
     _opt_str,
 )
 from garmin_mcp.paths import default_token_dir
+from garmin_mcp.strength_builder import (
+    BlockSpec,
+    SetSpec,
+    StrengthWorkoutSpec,
+    build_strength_workout,
+    summarize,
+)
 
 load_dotenv()
 
@@ -109,10 +128,18 @@ JWT_SECRET = os.getenv("JWT_SECRET", "")
 GARMIN_EMAIL = os.getenv("GARMIN_EMAIL", "")
 GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD", "")
 GARMIN_TOKEN_DIR = default_token_dir()
+# Writes (creating workouts) are OFF unless explicitly enabled.
+WRITE_ENABLED = os.getenv("GARMIN_WRITE_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
 
 AUTH_ENABLED = bool(MCP_PASSWORD and JWT_SECRET)
+
+# Active transport, set by run_stdio()/run_http(). The confirm=True dev bypass on
+# create_strength_workout (used when no JWT secret is configured) is honored only
+# on local stdio — never over HTTP, where it could let a caller skip the
+# content-bound preview token.
+_TRANSPORT: str = "stdio"
 
 # ---------------------------------------------------------------------------
 # FastMCP setup
@@ -174,6 +201,7 @@ def _get_garmin() -> GarminClient:
             email=GARMIN_EMAIL,
             password=GARMIN_PASSWORD,
             token_dir=GARMIN_TOKEN_DIR,
+            allow_writes=WRITE_ENABLED,
         )
     return _garmin
 
@@ -606,6 +634,232 @@ async def get_weekly_summary(
 
     result: WeeklySummary = await _cache.get_or_compute(cache_key, 3600, fetch)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Strength workout creation (write path)
+# ---------------------------------------------------------------------------
+
+
+def _strength_token(payload: dict[str, Any]) -> str:
+    """Content-bound confirmation token (HMAC of the canonical payload).
+
+    Deterministic: the same workout produces the same token, so a token from
+    ``preview`` only validates the exact workout it previewed. Empty when no
+    JWT secret is configured (stdio/dev), in which case ``confirm=True`` is used.
+    """
+    if not JWT_SECRET:
+        return ""
+    # Domain-separate from access-token signing that also uses JWT_SECRET.
+    canonical = "strength-workout-v1:" + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hmac.new(JWT_SECRET.encode(), canonical.encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def _spec_from_input(
+    workout: StrengthWorkoutInput,
+) -> tuple[StrengthWorkoutSpec, list[ResolvedExerciseInfo], list[str]]:
+    """Resolve free-text exercises to Garmin enums and build a builder spec."""
+    if not workout.blocks:
+        raise ValueError("workout has no blocks")
+    blocks: list[BlockSpec] = []
+    infos: list[ResolvedExerciseInfo] = []
+    warnings: list[str] = []
+    for block in workout.blocks:
+        set_specs: list[SetSpec] = []
+        for ex in block.exercises:
+            if ex.exercise_name:
+                # Explicit override. category is optional — derive it from the
+                # catalog when omitted rather than silently ignoring the override.
+                name = ex.exercise_name
+                category = ex.category or category_for_exercise(name)
+                if category is None:
+                    raise ValueError(
+                        f"'{ex.name}': exercise_name '{name}' is not in Garmin's "
+                        "catalog and no 'category' was given — pass an explicit "
+                        "'category' too, or use a name the resolver knows."
+                    )
+                confidence, label = "explicit", name.replace("_", " ").title()
+            elif ex.category:
+                # A category alone cannot identify an exercise (bare category
+                # names blank on upload); don't silently fall back to the resolver.
+                raise ValueError(
+                    f"'{ex.name}': 'category' was given without 'exercise_name'. "
+                    "Also pass 'exercise_name', or omit 'category' to use the "
+                    "name resolver."
+                )
+            else:
+                r = resolve_exercise(ex.name)
+                category = r.category or "UNKNOWN"
+                name = r.exercise_name or ex.name.upper().replace(" ", "_")
+                confidence, label = r.confidence, r.matched_label or ex.name
+                if not r.is_usable:
+                    warnings.append(f"'{ex.name}' -> {category}/{name} ({confidence})")
+            infos.append(
+                ResolvedExerciseInfo(
+                    query=ex.name,
+                    category=category,
+                    exercise_name=name,
+                    confidence=confidence,
+                    matched_label=label,
+                )
+            )
+            set_specs.append(
+                SetSpec(
+                    category=category,
+                    exercise_name=name,
+                    reps=ex.reps,
+                    seconds=ex.seconds,
+                    weight=ex.weight,
+                    weight_unit=ex.weight_unit,
+                    label=ex.name,
+                    note=ex.note,
+                )
+            )
+        blocks.append(BlockSpec(sets=block.sets, exercises=set_specs))
+    spec = StrengthWorkoutSpec(
+        name=workout.name, blocks=blocks, include_warmup=workout.include_warmup
+    )
+    return spec, infos, warnings
+
+
+def _blank_interval_steps(wj: dict[str, Any]) -> list[int]:
+    """Step orders of interval steps whose exerciseName came back blank.
+
+    Garmin returns HTTP 200 but silently blanks unknown/category-name exercises;
+    re-fetching after create and checking this is how we catch that.
+    """
+    blanks: list[int] = []
+
+    def walk(steps: list[dict[str, Any]]) -> None:
+        for s in steps:
+            if s.get("type") == "RepeatGroupDTO":
+                walk(s.get("workoutSteps", []))
+            elif (s.get("stepType") or {}).get("stepTypeKey") == "interval" and not s.get(
+                "exerciseName"
+            ):
+                # Defensive: stepOrder may be absent, null, or non-numeric in
+                # Garmin's re-fetched JSON; int(None) would crash the verify walk.
+                order = _opt_int(s.get("stepOrder"))
+                blanks.append(order if order is not None else -1)
+
+    for seg in wj.get("workoutSegments", []):
+        walk(seg.get("workoutSteps", []))
+    return blanks
+
+
+@mcp.tool()
+async def preview_strength_workout(workout: StrengthWorkoutInput) -> StrengthWorkoutPreview:
+    """Assemble a strength workout and show what WOULD be created — no network call.
+
+    Resolves each exercise name to Garmin's catalog and returns a readable
+    summary, the resolved Garmin name + confidence per exercise, warnings for
+    anything that did not map cleanly, and a ``confirmation_token`` to pass to
+    ``create_strength_workout``. Always call this first and review the result.
+
+    Args:
+        workout: the workout definition (name, blocks of sets/exercises).
+    """
+    spec, infos, warnings = _spec_from_input(workout)
+    payload = build_strength_workout(spec)
+    return StrengthWorkoutPreview(
+        name=workout.name,
+        summary=summarize(spec),
+        exercises=infos,
+        warnings=warnings,
+        confirmation_token=_strength_token(payload),
+    )
+
+
+@mcp.tool()
+async def create_strength_workout(
+    workout: StrengthWorkoutInput,
+    confirmation_token: str = "",
+    confirm: bool = False,
+) -> StrengthWorkoutCreated:
+    """Create a strength workout in your Garmin Connect library (a WRITE).
+
+    Requires writes to be enabled (GARMIN_WRITE_ENABLED) and a matching
+    ``confirmation_token`` from ``preview_strength_workout`` (it binds to the
+    exact workout previewed). The workout lands in your library — it reaches the
+    watch only after you "Send to Device" in Garmin Connect and sync.
+
+    Args:
+        workout: the workout definition (same shape as preview).
+        confirmation_token: token returned by ``preview_strength_workout``.
+        confirm: dev/stdio only (no JWT secret) — set True to confirm.
+    """
+    if not WRITE_ENABLED:
+        log.warning("workout.create.denied", name=workout.name, reason="writes_disabled")
+        raise ValueError(
+            "Writes are disabled. Set GARMIN_WRITE_ENABLED=1 to allow creating workouts."
+        )
+
+    spec, infos, _warnings = _spec_from_input(workout)
+    payload = build_strength_workout(spec)
+
+    expected = _strength_token(payload)
+    if expected:
+        # Constant-time compare: confirmation_token is HMAC-derived from the
+        # previewed payload, so a plain != would leak it byte-by-byte via timing.
+        if not hmac.compare_digest(confirmation_token, expected):
+            raise ValueError(
+                "confirmation_token does not match this workout — call "
+                "preview_strength_workout again and pass its token."
+            )
+    elif confirm and _TRANSPORT == "stdio":
+        # Dev/stdio only: no JWT secret to bind a token, so an explicit confirm
+        # stands in. Never reachable over HTTP (see run_http's start-up guard).
+        log.info("workout.create.dev_confirm", name=workout.name)
+    else:
+        raise ValueError(
+            "Cannot confirm this write: set JWT_SECRET and pass the token from "
+            "preview_strength_workout. (confirm=True is honored only on local stdio.)"
+        )
+
+    valid = valid_exercise_names()
+    bad = sorted(
+        {s.exercise_name for b in spec.blocks for s in b.exercises if s.exercise_name not in valid}
+    )
+    if bad:
+        raise ValueError(f"Unknown Garmin exercise name(s): {', '.join(bad)}")
+
+    client = _get_garmin()
+    log.info("workout.create.attempt", name=workout.name, exercises=len(infos))
+    result = await client.call("upload_workout", payload)
+    workout_id = (
+        str(result["workoutId"])
+        if isinstance(result, dict) and result.get("workoutId") is not None
+        else None
+    )
+
+    blanks: list[int] = []
+    verified = False
+    if workout_id is not None:
+        try:
+            check = await client.call("get_workout_by_id", workout_id)
+            blanks = _blank_interval_steps(check) if isinstance(check, dict) else []
+            verified = not blanks
+        except Exception as exc:
+            # The upload already succeeded; a verify failure (network or a
+            # malformed re-fetch) must not turn a created workout into an error.
+            log.warning("workout.create.verify_failed", workout_id=workout_id, error=str(exc)[:200])
+    log.info("workout.create.success", workout_id=workout_id, name=workout.name, verified=verified)
+
+    status = (
+        f"Created '{workout.name}'"
+        + (f" (id {workout_id})" if workout_id else "")
+        + " in your Garmin Connect library. It is NOT on the watch yet — open it in "
+        "Garmin Connect, tap 'Send to Device', then sync your watch (Training > Workouts)."
+    )
+    if blanks:
+        status += f" WARNING: Garmin blanked step(s) {blanks} — review those exercises."
+    return StrengthWorkoutCreated(
+        workout_id=workout_id,
+        name=workout.name,
+        status=status,
+        verified=verified,
+        blank_steps=blanks,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1322,12 +1576,25 @@ async def health(_request: Request) -> Response:
 
 def run_stdio() -> None:
     """Run with stdio transport. Used by ``mcp dev``."""
+    global _TRANSPORT
+    _TRANSPORT = "stdio"
     mcp.run(transport="stdio")
 
 
 def run_http() -> None:
     """Run with streamable-http transport. Used in production."""
+    global _TRANSPORT
+    _TRANSPORT = "http"
     if not AUTH_ENABLED:
+        if WRITE_ENABLED:
+            # An unauthenticated HTTP server with writes enabled would let any
+            # caller create workouts (and, with no JWT secret, _strength_token
+            # is empty so even the preview-token check is vacuous). Refuse.
+            raise SystemExit(
+                "Refusing to start: GARMIN_WRITE_ENABLED is set but HTTP auth is "
+                "disabled. Set MCP_AUTH_PASSWORD and JWT_SECRET, or unset "
+                "GARMIN_WRITE_ENABLED."
+            )
         log.warning(
             "http.no_auth",
             message=(
