@@ -55,6 +55,33 @@ _TARGET_NONE = {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "
 _UNIT_POUND = {"unitId": 9, "unitKey": "pound", "factor": 453.59237}
 _UNIT_KILOGRAM = {"unitId": 8, "unitKey": "kilogram", "factor": 1000.0}
 
+# Accepted spellings for the two units, normalised to Garmin's canonical key.
+# Without this, any value that is not exactly "kilogram" (e.g. "kg") silently
+# falls through to pounds — a ~2.2x load mis-record on the write path.
+_WEIGHT_UNIT_ALIASES: dict[str, str] = {
+    "pound": "pound",
+    "pounds": "pound",
+    "lb": "pound",
+    "lbs": "pound",
+    "kilogram": "kilogram",
+    "kilograms": "kilogram",
+    "kilo": "kilogram",
+    "kilos": "kilogram",
+    "kg": "kilogram",
+    "kgs": "kilogram",
+}
+
+
+def normalize_weight_unit(unit: str) -> str:
+    """Canonicalise a weight unit to 'pound' or 'kilogram'; raise on unknown."""
+    key = unit.strip().lower()
+    try:
+        return _WEIGHT_UNIT_ALIASES[key]
+    except KeyError:
+        raise ValueError(
+            f"weight_unit {unit!r} is not recognised; use 'pound'/'lb' or 'kilogram'/'kg'."
+        ) from None
+
 
 @dataclass
 class SetSpec:
@@ -74,6 +101,12 @@ class SetSpec:
     label: str | None = None  # human-readable, for the preview summary
     note: str | None = None  # -> step description; carries rep range/RPE and,
     # for imperfect matches, the original exercise name so the watch shows it.
+
+    def __post_init__(self) -> None:
+        # Normalise here so both the payload (_weight_unit_obj) and the preview
+        # (summarize) agree, and an unknown unit fails loud rather than silently
+        # becoming pounds — regardless of who built the SetSpec.
+        self.weight_unit = normalize_weight_unit(self.weight_unit)
 
 
 @dataclass

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .strength_builder import normalize_weight_unit
 
 
 class _StrictBase(BaseModel):
@@ -313,7 +315,9 @@ class StrengthExerciseInput(BaseModel):
     weight: float | None = Field(
         default=None, description="Optional load; omit to log on the watch."
     )
-    weight_unit: str = Field(default="pound", description="'pound' or 'kilogram'.")
+    weight_unit: str = Field(
+        default="pound", description="Weight unit: 'pound'/'lb' or 'kilogram'/'kg'."
+    )
     note: str | None = Field(
         default=None, description="Step note shown on the watch (e.g. rep range, RPE)."
     )
@@ -321,6 +325,11 @@ class StrengthExerciseInput(BaseModel):
         default=None, description="Explicit Garmin exerciseName enum, bypasses the resolver."
     )
     category: str | None = Field(default=None, description="Explicit Garmin category enum.")
+
+    @field_validator("weight_unit")
+    @classmethod
+    def _check_weight_unit(cls, v: str) -> str:
+        return normalize_weight_unit(v)
 
 
 class StrengthBlockInput(BaseModel):

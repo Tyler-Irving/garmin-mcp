@@ -112,3 +112,78 @@ def test_create_happy_path_round_trips(monkeypatch: pytest.MonkeyPatch) -> None:
     assert created.blank_steps == []
     assert "Send to Device" in created.status
     assert "upload_workout" in fake.calls
+
+
+def test_confirm_true_rejected_over_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The confirm=True dev bypass must never work over HTTP, even with no JWT
+    # secret (which makes the content-bound token empty/vacuous).
+    monkeypatch.setattr(server, "WRITE_ENABLED", True)
+    monkeypatch.setattr(server, "JWT_SECRET", "")
+    monkeypatch.setattr(server, "_TRANSPORT", "http")
+    server.set_garmin_client_for_testing(None)
+    with pytest.raises(ValueError, match="only on local stdio"):
+        asyncio.run(server.create_strength_workout(_workout(), confirm=True))
+
+
+def test_confirm_true_allowed_on_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The same dev bypass IS allowed on local stdio (no JWT secret to bind).
+    monkeypatch.setattr(server, "WRITE_ENABLED", True)
+    monkeypatch.setattr(server, "JWT_SECRET", "")
+    monkeypatch.setattr(server, "_TRANSPORT", "stdio")
+    fake = _FakeClient()
+    server.set_garmin_client_for_testing(fake)
+    try:
+        created = asyncio.run(server.create_strength_workout(_workout(), confirm=True))
+    finally:
+        server.set_garmin_client_for_testing(None)
+    assert created.workout_id == "424242"
+    assert "upload_workout" in fake.calls
+
+
+def test_run_http_refuses_writes_without_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A write-enabled HTTP server with auth disabled must refuse to start.
+    monkeypatch.setattr(server, "_TRANSPORT", "stdio")  # restored after the test
+    monkeypatch.setattr(server, "WRITE_ENABLED", True)
+    monkeypatch.setattr(server, "AUTH_ENABLED", False)
+    with pytest.raises(SystemExit, match="Refusing to start"):
+        server.run_http()
+
+
+def test_exercise_name_override_alone_derives_category(monkeypatch: pytest.MonkeyPatch) -> None:
+    # exercise_name on its own bypasses the resolver; the category is derived,
+    # not silently discarded (which used to require BOTH fields).
+    monkeypatch.setattr(server, "JWT_SECRET", "testsecret")
+    server.set_garmin_client_for_testing(None)
+    workout = StrengthWorkoutInput(
+        name="t",
+        blocks=[
+            StrengthBlockInput(
+                sets=1,
+                exercises=[
+                    StrengthExerciseInput(
+                        name="My Special Curl", reps=10, exercise_name="WEIGHTED_LEG_CURL"
+                    )
+                ],
+            )
+        ],
+    )
+    prev = asyncio.run(server.preview_strength_workout(workout))
+    info = prev.exercises[0]
+    assert info.exercise_name == "WEIGHTED_LEG_CURL"
+    assert info.category == "LEG_CURL"
+    assert info.confidence == "explicit"
+
+
+def test_category_without_exercise_name_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    server.set_garmin_client_for_testing(None)
+    workout = StrengthWorkoutInput(
+        name="t",
+        blocks=[
+            StrengthBlockInput(
+                sets=1,
+                exercises=[StrengthExerciseInput(name="x", reps=10, category="LEG_CURL")],
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="without 'exercise_name'"):
+        asyncio.run(server.preview_strength_workout(workout))

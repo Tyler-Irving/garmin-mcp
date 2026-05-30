@@ -172,6 +172,13 @@ class GarminClient:
                 f"Write method '{method_name}' blocked: writes are disabled "
                 "(set GARMIN_WRITE_ENABLED=1 to enable)."
             )
+        # Writes are non-idempotent POSTs: a network timeout AFTER the request
+        # commits server-side, then a blind retry, would create a duplicate. So
+        # do not retry writes on transient network errors. (The auth-error retry
+        # below is still safe for writes — a 401/403 means the call was rejected
+        # before committing, so re-login + one retry cannot duplicate.)
+        is_write = method_name in _WRITE_METHODS
+        max_attempts = 1 if is_write else 3
 
         async def _invoke() -> Any:
             await self._rate_limit()
@@ -185,7 +192,7 @@ class GarminClient:
 
         try:
             async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(3),
+                stop=stop_after_attempt(max_attempts),
                 wait=wait_exponential(multiplier=1, min=1, max=8),
                 retry=retry_if_exception_type(_RETRYABLE_NETWORK_EXC),
                 reraise=True,

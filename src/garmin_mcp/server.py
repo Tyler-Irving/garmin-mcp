@@ -44,7 +44,11 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 
 from garmin_mcp.auth import InvalidLoginError, SimpleOAuthProvider
 from garmin_mcp.cache import TTLCache
-from garmin_mcp.exercise_resolver import resolve_exercise, valid_exercise_names
+from garmin_mcp.exercise_resolver import (
+    category_for_exercise,
+    resolve_exercise,
+    valid_exercise_names,
+)
 from garmin_mcp.garmin_client import GarminClient, GarminClientError
 from garmin_mcp.models import (
     Activity,
@@ -130,6 +134,12 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
 
 AUTH_ENABLED = bool(MCP_PASSWORD and JWT_SECRET)
+
+# Active transport, set by run_stdio()/run_http(). The confirm=True dev bypass on
+# create_strength_workout (used when no JWT secret is configured) is honored only
+# on local stdio — never over HTTP, where it could let a caller skip the
+# content-bound preview token.
+_TRANSPORT: str = "stdio"
 
 # ---------------------------------------------------------------------------
 # FastMCP setup
@@ -657,9 +667,26 @@ def _spec_from_input(
     for block in workout.blocks:
         set_specs: list[SetSpec] = []
         for ex in block.exercises:
-            if ex.exercise_name and ex.category:
-                category, name = ex.category, ex.exercise_name
-                confidence, label = "explicit", ex.exercise_name.replace("_", " ").title()
+            if ex.exercise_name:
+                # Explicit override. category is optional — derive it from the
+                # catalog when omitted rather than silently ignoring the override.
+                name = ex.exercise_name
+                category = ex.category or category_for_exercise(name)
+                if category is None:
+                    raise ValueError(
+                        f"'{ex.name}': exercise_name '{name}' is not in Garmin's "
+                        "catalog and no 'category' was given — pass an explicit "
+                        "'category' too, or use a name the resolver knows."
+                    )
+                confidence, label = "explicit", name.replace("_", " ").title()
+            elif ex.category:
+                # A category alone cannot identify an exercise (bare category
+                # names blank on upload); don't silently fall back to the resolver.
+                raise ValueError(
+                    f"'{ex.name}': 'category' was given without 'exercise_name'. "
+                    "Also pass 'exercise_name', or omit 'category' to use the "
+                    "name resolver."
+                )
             else:
                 r = resolve_exercise(ex.name)
                 category = r.category or "UNKNOWN"
@@ -710,7 +737,10 @@ def _blank_interval_steps(wj: dict[str, Any]) -> list[int]:
             elif (s.get("stepType") or {}).get("stepTypeKey") == "interval" and not s.get(
                 "exerciseName"
             ):
-                blanks.append(int(s.get("stepOrder", -1)))
+                # Defensive: stepOrder may be absent, null, or non-numeric in
+                # Garmin's re-fetched JSON; int(None) would crash the verify walk.
+                order = _opt_int(s.get("stepOrder"))
+                blanks.append(order if order is not None else -1)
 
     for seg in wj.get("workoutSegments", []):
         walk(seg.get("workoutSteps", []))
@@ -769,13 +799,22 @@ async def create_strength_workout(
 
     expected = _strength_token(payload)
     if expected:
-        if confirmation_token != expected:
+        # Constant-time compare: confirmation_token is HMAC-derived from the
+        # previewed payload, so a plain != would leak it byte-by-byte via timing.
+        if not hmac.compare_digest(confirmation_token, expected):
             raise ValueError(
                 "confirmation_token does not match this workout — call "
                 "preview_strength_workout again and pass its token."
             )
-    elif not confirm:
-        raise ValueError("No JWT secret configured; pass confirm=True to create (dev mode).")
+    elif confirm and _TRANSPORT == "stdio":
+        # Dev/stdio only: no JWT secret to bind a token, so an explicit confirm
+        # stands in. Never reachable over HTTP (see run_http's start-up guard).
+        log.info("workout.create.dev_confirm", name=workout.name)
+    else:
+        raise ValueError(
+            "Cannot confirm this write: set JWT_SECRET and pass the token from "
+            "preview_strength_workout. (confirm=True is honored only on local stdio.)"
+        )
 
     valid = valid_exercise_names()
     bad = sorted(
@@ -800,7 +839,9 @@ async def create_strength_workout(
             check = await client.call("get_workout_by_id", workout_id)
             blanks = _blank_interval_steps(check) if isinstance(check, dict) else []
             verified = not blanks
-        except GarminClientError as exc:
+        except Exception as exc:
+            # The upload already succeeded; a verify failure (network or a
+            # malformed re-fetch) must not turn a created workout into an error.
             log.warning("workout.create.verify_failed", workout_id=workout_id, error=str(exc)[:200])
     log.info("workout.create.success", workout_id=workout_id, name=workout.name, verified=verified)
 
@@ -1535,12 +1576,25 @@ async def health(_request: Request) -> Response:
 
 def run_stdio() -> None:
     """Run with stdio transport. Used by ``mcp dev``."""
+    global _TRANSPORT
+    _TRANSPORT = "stdio"
     mcp.run(transport="stdio")
 
 
 def run_http() -> None:
     """Run with streamable-http transport. Used in production."""
+    global _TRANSPORT
+    _TRANSPORT = "http"
     if not AUTH_ENABLED:
+        if WRITE_ENABLED:
+            # An unauthenticated HTTP server with writes enabled would let any
+            # caller create workouts (and, with no JWT secret, _strength_token
+            # is empty so even the preview-token check is vacuous). Refuse.
+            raise SystemExit(
+                "Refusing to start: GARMIN_WRITE_ENABLED is set but HTTP auth is "
+                "disabled. Set MCP_AUTH_PASSWORD and JWT_SECRET, or unset "
+                "GARMIN_WRITE_ENABLED."
+            )
         log.warning(
             "http.no_auth",
             message=(

@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from garmin_mcp.exercise_resolver import resolve_exercise
+from garmin_mcp.exercise_resolver import category_for_exercise, resolve_exercise
 from garmin_mcp.garmin_client import GarminAuthError, GarminClient, GarminClientError
 from garmin_mcp.strength_builder import (
     BlockSpec,
@@ -65,10 +65,13 @@ def test_resolver_override() -> None:
 
 def test_resolver_exact_name_beats_wrong_variant() -> None:
     # "Leg Extension" must map to LEG_EXTENSION, not the higher-scoring but
-    # semantically wrong BRIDGE_WITH_LEG_EXTENSION (a glute bridge).
+    # semantically wrong BRIDGE_WITH_LEG_EXTENSION (a glute bridge). LEG_EXTENSION
+    # sits in the BANDED_EXERCISES junk category, so the junk discount drops it
+    # from "exact" to "high" — still usable, still the right name.
     r = resolve_exercise("Leg Extension")
     assert r.exercise_name == "LEG_EXTENSION"
-    assert r.confidence == "exact"
+    assert r.is_usable
+    assert r.confidence == "high"
 
 
 def test_resolver_unmappable_is_flagged_not_guessed() -> None:
@@ -76,6 +79,28 @@ def test_resolver_unmappable_is_flagged_not_guessed() -> None:
     # silently mapped with high confidence.
     r = resolve_exercise("Pallof Press Iso-Hold")
     assert not r.is_usable
+
+
+def test_resolver_seated_leg_curl_is_hamstring_not_crunch() -> None:
+    # Regression: "Seated Leg Curl" used to win CRUNCH/SEATED_LEG_U (an ab move,
+    # wrong muscle group) at "high" confidence on the "seated"+"leg" overlap.
+    r = resolve_exercise("Seated Leg Curl")
+    assert (r.category, r.exercise_name) == ("LEG_CURL", "WEIGHTED_LEG_CURL")
+    assert r.is_usable
+
+
+def test_resolver_junk_category_penalty_affects_score() -> None:
+    # The junk-category penalty must lower the score itself (not be a dead
+    # 4th-place tie-breaker): a PLYO (junk) exact match no longer reports 1.0.
+    r = resolve_exercise("Box Jump")
+    assert r.category == "PLYO"  # no non-junk "box jump" leaf exists
+    assert r.score < 1.0
+    assert r.confidence != "exact"
+
+
+def test_category_for_exercise_lookup() -> None:
+    assert category_for_exercise("WEIGHTED_LEG_CURL") == "LEG_CURL"
+    assert category_for_exercise("NOT_A_REAL_ENUM") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -230,6 +255,35 @@ def test_note_becomes_step_description() -> None:
     assert work["description"] == "Pallof Press (anti-rotation)"
 
 
+def test_weight_unit_alias_normalised_in_payload() -> None:
+    # "kg" must record kilograms, not silently fall through to pounds.
+    spec = StrengthWorkoutSpec(
+        name="t",
+        include_warmup=False,
+        blocks=[
+            BlockSpec(
+                sets=1,
+                exercises=[
+                    SetSpec(
+                        category="SQUAT",
+                        exercise_name="LEG_PRESS",
+                        reps=5,
+                        weight=100,
+                        weight_unit="kg",
+                    )
+                ],
+            )
+        ],
+    )
+    step = _steps(build_strength_workout(spec))[0]
+    assert step["weightUnit"]["unitKey"] == "kilogram"
+
+
+def test_weight_unit_unknown_is_rejected() -> None:
+    with pytest.raises(ValueError, match="not recognised"):
+        SetSpec(category="C", exercise_name="N", reps=5, weight=10, weight_unit="stones")
+
+
 # --------------------------------------------------------------------------- #
 # Write-gate / allowlist (guard short-circuits before any network call)
 # --------------------------------------------------------------------------- #
@@ -245,3 +299,25 @@ def test_client_blocks_writes_when_disabled() -> None:
     client = GarminClient(email="", password="", token_dir="/tmp/x", allow_writes=False)
     with pytest.raises(GarminAuthError, match="writes are disabled"):
         asyncio.run(client.call("upload_workout", {}))
+
+
+def test_client_does_not_retry_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A write is a non-idempotent POST: a network blip must NOT trigger a blind
+    # retry (which could create a duplicate workout). It is attempted once.
+    client = GarminClient(
+        email="", password="", token_dir="/tmp/x", allow_writes=True, rate_limit_seconds=0.0
+    )
+    calls = {"n": 0}
+
+    class _Underlying:
+        def upload_workout(self, payload: object) -> object:
+            calls["n"] += 1
+            raise TimeoutError("network blip")
+
+    async def _fake_login(force: bool = False) -> object:
+        return _Underlying()
+
+    monkeypatch.setattr(client, "_ensure_logged_in", _fake_login)
+    with pytest.raises(GarminClientError):
+        asyncio.run(client.call("upload_workout", {}))
+    assert calls["n"] == 1

@@ -61,6 +61,9 @@ _STOP = {"the", "a", "an", "of", "with", "and", "to", "or", "your", "x"}
 _OVERRIDES: dict[str, tuple[str, str]] = {
     "rear delt fly": ("LATERAL_RAISE", "BENT_OVER_LATERAL_RAISE"),
     "suitcase carry": ("CARRY", "FARMERS_CARRY"),
+    # "Seated Leg Curl" otherwise wins CRUNCH/SEATED_LEG_U (an ab move) on the
+    # "seated"+"leg" token overlap — a confidently-wrong, wrong-muscle match.
+    "seated leg curl": ("LEG_CURL", "WEIGHTED_LEG_CURL"),
 }
 
 # Categories that are not mainstream free-weight/machine lifting. A correct
@@ -87,6 +90,12 @@ _JUNK_CATEGORIES: frozenset[str] = frozenset(
         "PLYO",
     }
 )
+
+# Subtracted from a junk-category candidate's score (not used as a late
+# tie-breaker, which never fires on non-tied scores). This lets the discount
+# (a) flip ranking toward a standard-category match within the margin and
+# (b) lower the confidence of a junk-only match so it is surfaced for review.
+_JUNK_PENALTY = 0.10
 
 
 @dataclass(frozen=True)
@@ -156,6 +165,24 @@ def valid_exercise_names() -> frozenset[str]:
     return frozenset(name for _cat, name, _toks in _index())
 
 
+@lru_cache(maxsize=1)
+def _name_to_category() -> dict[str, str]:
+    """Map each exerciseName to a category, preferring a non-junk one."""
+    out: dict[str, str] = {}
+    for category, name, _toks in _index():
+        current = out.get(name)
+        if current is None or (
+            current in _JUNK_CATEGORIES and category not in _JUNK_CATEGORIES
+        ):
+            out[name] = category
+    return out
+
+
+def category_for_exercise(name: str) -> str | None:
+    """The Garmin category that owns ``name`` (for an exercise_name-only override)."""
+    return _name_to_category().get(name)
+
+
 def _confidence(score: float) -> Confidence:
     if score >= 0.99:
         return "exact"
@@ -186,7 +213,7 @@ def resolve_exercise(query: str) -> ResolvedExercise:
 
     q_set = set(q_tokens)
     best: tuple[float, str, str] | None = None
-    best_key: tuple[int, float, int, int] | None = None
+    best_key: tuple[int, float, int] | None = None
     for category, exercise_name, cand_tokens in _index():
         # An exact token-set match scores 1.0 (e.g. "Leg Extension" -> LEG_EXTENSION,
         # not a higher-scoring BRIDGE_WITH_LEG_EXTENSION).
@@ -194,12 +221,16 @@ def resolve_exercise(query: str) -> ResolvedExercise:
             s = 1.0
         else:
             s = _score(q_tokens, cand_tokens)
+        # Discount junk categories in the score itself so the penalty actually
+        # affects ranking and confidence (see _JUNK_PENALTY).
+        if category in _JUNK_CATEGORIES:
+            s -= _JUNK_PENALTY
         # Prefer a SPECIFIC exercise (name != category) above all generics:
         # Garmin's workout-service silently blanks bare category-name entries
         # like "BENCH_PRESS"/"LEG_RAISE" (they are categories, not leaf
         # exercises), so a specific variant like BARBELL_BENCH_PRESS is required.
         is_specific = 1 if exercise_name != category else 0
-        key = (is_specific, s, 0 if category in _JUNK_CATEGORIES else 1, -len(exercise_name))
+        key = (is_specific, s, -len(exercise_name))
         if best_key is None or key > best_key:
             best_key, best = key, (s, category, exercise_name)
 
