@@ -87,7 +87,6 @@ _JUNK_CATEGORIES: frozenset[str] = frozenset(
         "PLYO",
     }
 )
-_JUNK_PENALTY = 0.82
 
 
 @dataclass(frozen=True)
@@ -179,14 +178,24 @@ def resolve_exercise(query: str) -> ResolvedExercise:
             matched_label=_label(exercise_name),
         )
 
+    q_set = set(q_tokens)
     best: tuple[float, str, str] | None = None
+    best_key: tuple[int, float, int, int] | None = None
     for category, exercise_name, cand_tokens in _index():
-        s = _score(q_tokens, cand_tokens)
-        if category in _JUNK_CATEGORIES:
-            s *= _JUNK_PENALTY
-        # Tie-break toward shorter (more generic) enum names.
-        if best is None or s > best[0] or (s == best[0] and len(exercise_name) < len(best[2])):
-            best = (s, category, exercise_name)
+        # An exact token-set match scores 1.0 (e.g. "Leg Extension" -> LEG_EXTENSION,
+        # not a higher-scoring BRIDGE_WITH_LEG_EXTENSION).
+        if q_set and len(q_tokens) == len(cand_tokens) and q_set == set(cand_tokens):
+            s = 1.0
+        else:
+            s = _score(q_tokens, cand_tokens)
+        # Prefer a SPECIFIC exercise (name != category) above all generics:
+        # Garmin's workout-service silently blanks bare category-name entries
+        # like "BENCH_PRESS"/"LEG_RAISE" (they are categories, not leaf
+        # exercises), so a specific variant like BARBELL_BENCH_PRESS is required.
+        is_specific = 1 if exercise_name != category else 0
+        key = (is_specific, s, 0 if category in _JUNK_CATEGORIES else 1, -len(exercise_name))
+        if best_key is None or key > best_key:
+            best_key, best = key, (s, category, exercise_name)
 
     if best is None:
         return ResolvedExercise(query, None, None, "none", 0.0, None)

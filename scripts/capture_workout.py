@@ -84,7 +84,7 @@ def list_workouts(g) -> None:
 def summarize_strength(wj: dict) -> None:
     """Print the strength-relevant fields so we can eyeball the encoding."""
     print("\n=== STRENGTH FIELD SUMMARY ===")
-    sport = (wj.get("sportType") or {})
+    sport = wj.get("sportType") or {}
     print(f"sportType: {sport.get('sportTypeId')} / {sport.get('sportTypeKey')}")
     segments = wj.get("workoutSegments") or []
     for seg in segments:
@@ -128,7 +128,9 @@ def dump_one(g, selector: str) -> None:
             None,
         )
     if match is None:
-        print(f"[fail] no workout matching '{selector}'. Run with no args to list.", file=sys.stderr)
+        print(
+            f"[fail] no workout matching '{selector}'. Run with no args to list.", file=sys.stderr
+        )
         sys.exit(1)
 
     wid = match["workoutId"]

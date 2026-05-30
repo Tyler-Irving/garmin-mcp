@@ -43,6 +43,40 @@ _RETRYABLE_NETWORK_EXC = (
     asyncio.TimeoutError,
 )
 
+# The wrapper dispatches by method name via getattr, so it can in principle
+# invoke ANY method on garminconnect.Garmin (including writes/deletes). To keep
+# the server read-only by *enforcement* rather than by call-site convention,
+# only methods on these allowlists may be called. Write methods additionally
+# require ``allow_writes=True`` (driven by GARMIN_WRITE_ENABLED).
+_READ_METHODS: frozenset[str] = frozenset(
+    {
+        "get_sleep_data",
+        "get_activities",
+        "get_activity",
+        "get_activity_splits",
+        "get_activity_hr_in_timezones",
+        "get_training_status",
+        "get_hrv_data",
+        "get_body_battery",
+        "get_user_summary",
+        "get_rhr_day",
+        "get_stress_data",
+        "get_training_readiness",
+        "get_max_metrics",
+        "get_race_predictions",
+        "get_personal_record",
+        "get_body_composition",
+        "get_respiration_data",
+        "get_weekly_intensity_minutes",
+        "get_weekly_steps",
+        "get_weekly_stress",
+        "get_workouts",
+        "get_workout_by_id",
+    }
+)
+# Deliberately minimal: create only. No delete_workout / schedule_workout.
+_WRITE_METHODS: frozenset[str] = frozenset({"upload_workout"})
+
 
 class GarminClient:
     """Async-friendly facade over the synchronous ``garminconnect`` library."""
@@ -53,6 +87,7 @@ class GarminClient:
         password: str,
         token_dir: str = "/tmp/garth",
         rate_limit_seconds: float = 2.0,
+        allow_writes: bool = False,
     ) -> None:
         # Empty creds are allowed: the server can run on saved tokens alone
         # (seeded by `garmin-mcp login`). They are only required when the saved
@@ -61,6 +96,7 @@ class GarminClient:
         self._password = password
         self._token_dir = Path(token_dir)
         self._rate_limit_seconds = rate_limit_seconds
+        self._allow_writes = allow_writes
         self._client: Any | None = None
         self._login_lock = asyncio.Lock()
         self._rate_lock = asyncio.Lock()
@@ -127,6 +163,15 @@ class GarminClient:
         We retry on transient network errors. On what looks like an auth
         error we drop the cached client, re-login, and try one more time.
         """
+        if method_name not in _READ_METHODS and method_name not in _WRITE_METHODS:
+            raise GarminClientError(
+                f"Method '{method_name}' is not on the allowlist; refusing to call it."
+            )
+        if method_name in _WRITE_METHODS and not self._allow_writes:
+            raise GarminAuthError(
+                f"Write method '{method_name}' blocked: writes are disabled "
+                "(set GARMIN_WRITE_ENABLED=1 to enable)."
+            )
 
         async def _invoke() -> Any:
             await self._rate_limit()

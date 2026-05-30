@@ -8,9 +8,12 @@ numberOfIterations sets, working set = interval step with reps end condition
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from garmin_mcp.exercise_resolver import resolve_exercise
+from garmin_mcp.garmin_client import GarminAuthError, GarminClient, GarminClientError
 from garmin_mcp.strength_builder import (
     BlockSpec,
     SetSpec,
@@ -31,7 +34,9 @@ def _steps(payload: dict) -> list[dict]:
 @pytest.mark.parametrize(
     "query,category,exercise_name",
     [
-        ("Bench Press", "BENCH_PRESS", "BENCH_PRESS"),
+        # Bench Press must resolve to a SPECIFIC leaf, not the bare BENCH_PRESS
+        # category (which Garmin blanks on upload).
+        ("Bench Press", "BENCH_PRESS", "BARBELL_BENCH_PRESS"),
         ("Lat Pulldown", "PULL_UP", "LAT_PULLDOWN"),  # the alias-bug regression
         ("Tricep Pushdown", "TRICEPS_EXTENSION", "TRICEPS_PRESSDOWN"),
         ("Romanian Deadlift", "DEADLIFT", "ROMANIAN_DEADLIFT"),
@@ -45,15 +50,25 @@ def test_resolver_known_exercises(query: str, category: str, exercise_name: str)
     assert r.is_usable
 
 
+def test_resolver_avoids_bare_category_name() -> None:
+    # Garmin blanks bare category-name exercises (BENCH_PRESS, LEG_RAISE...);
+    # the resolver must pick a specific leaf instead.
+    for q in ["Bench Press", "Captains Chair Leg Raise", "Lateral Raise"]:
+        r = resolve_exercise(q)
+        assert r.exercise_name != r.category, f"{q} resolved to bare category {r.category}"
+
+
 def test_resolver_override() -> None:
     r = resolve_exercise("Rear Delt Fly")
     assert (r.category, r.exercise_name) == ("LATERAL_RAISE", "BENT_OVER_LATERAL_RAISE")
 
 
-def test_resolver_no_junk_category_for_common_lift() -> None:
-    # "Lateral Raise" must not resolve into BANDED_EXERCISES.
-    r = resolve_exercise("Lateral Raise")
-    assert r.category == "LATERAL_RAISE"
+def test_resolver_exact_name_beats_wrong_variant() -> None:
+    # "Leg Extension" must map to LEG_EXTENSION, not the higher-scoring but
+    # semantically wrong BRIDGE_WITH_LEG_EXTENSION (a glute bridge).
+    r = resolve_exercise("Leg Extension")
+    assert r.exercise_name == "LEG_EXTENSION"
+    assert r.confidence == "exact"
 
 
 def test_resolver_unmappable_is_flagged_not_guessed() -> None:
@@ -71,7 +86,9 @@ def test_resolver_unmappable_is_flagged_not_guessed() -> None:
 def test_sport_type_is_strength() -> None:
     spec = StrengthWorkoutSpec(
         name="t",
-        blocks=[BlockSpec(sets=3, exercises=[SetSpec("BENCH_PRESS", "BARBELL_BENCH_PRESS", reps=8)])],
+        blocks=[
+            BlockSpec(sets=3, exercises=[SetSpec("BENCH_PRESS", "BARBELL_BENCH_PRESS", reps=8)])
+        ],
         include_warmup=False,
     )
     payload = build_strength_workout(spec)
@@ -82,7 +99,9 @@ def test_sport_type_is_strength() -> None:
 def test_multiset_builds_repeat_group_with_reps_and_rest() -> None:
     spec = StrengthWorkoutSpec(
         name="t",
-        blocks=[BlockSpec(sets=4, exercises=[SetSpec("BENCH_PRESS", "BARBELL_BENCH_PRESS", reps=6)])],
+        blocks=[
+            BlockSpec(sets=4, exercises=[SetSpec("BENCH_PRESS", "BARBELL_BENCH_PRESS", reps=6)])
+        ],
         include_warmup=False,
     )
     group = _steps(build_strength_workout(spec))[0]
@@ -185,8 +204,44 @@ def test_set_without_reps_or_seconds_raises() -> None:
 def test_warmup_step_added_by_default() -> None:
     spec = StrengthWorkoutSpec(
         name="t",
-        blocks=[BlockSpec(sets=3, exercises=[SetSpec("BENCH_PRESS", "BARBELL_BENCH_PRESS", reps=8)])],
+        blocks=[
+            BlockSpec(sets=3, exercises=[SetSpec("BENCH_PRESS", "BARBELL_BENCH_PRESS", reps=8)])
+        ],
     )
     first = _steps(build_strength_workout(spec))[0]
     assert first["stepType"]["stepTypeKey"] == "warmup"
     assert first["endCondition"]["conditionTypeId"] == 1  # lap.button
+
+
+def test_note_becomes_step_description() -> None:
+    spec = StrengthWorkoutSpec(
+        name="t",
+        blocks=[
+            BlockSpec(
+                sets=2,
+                exercises=[
+                    SetSpec("PLANK", "PLANK", seconds=30, note="Pallof Press (anti-rotation)")
+                ],
+            )
+        ],
+        include_warmup=False,
+    )
+    work = _steps(build_strength_workout(spec))[0]["workoutSteps"][0]
+    assert work["description"] == "Pallof Press (anti-rotation)"
+
+
+# --------------------------------------------------------------------------- #
+# Write-gate / allowlist (guard short-circuits before any network call)
+# --------------------------------------------------------------------------- #
+
+
+def test_client_rejects_non_allowlisted_method() -> None:
+    client = GarminClient(email="", password="", token_dir="/tmp/x")
+    with pytest.raises(GarminClientError, match="allowlist"):
+        asyncio.run(client.call("delete_workout", 123))
+
+
+def test_client_blocks_writes_when_disabled() -> None:
+    client = GarminClient(email="", password="", token_dir="/tmp/x", allow_writes=False)
+    with pytest.raises(GarminAuthError, match="writes are disabled"):
+        asyncio.run(client.call("upload_workout", {}))

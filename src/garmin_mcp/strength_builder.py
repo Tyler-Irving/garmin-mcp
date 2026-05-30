@@ -72,6 +72,8 @@ class SetSpec:
     weight: float | None = None
     weight_unit: str = "pound"  # "pound" | "kilogram"
     label: str | None = None  # human-readable, for the preview summary
+    note: str | None = None  # -> step description; carries rep range/RPE and,
+    # for imperfect matches, the original exercise name so the watch shows it.
 
 
 @dataclass
@@ -122,6 +124,8 @@ def _interval_step(s: SetSpec, order: int) -> dict[str, Any]:
         "category": s.category,
         "exerciseName": s.exercise_name,
     }
+    if s.note:
+        step["description"] = s.note
     if s.weight is not None:
         step["weightValue"] = float(s.weight)
         step["weightUnit"] = _weight_unit_obj(s.weight_unit)
