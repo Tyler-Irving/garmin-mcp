@@ -4,9 +4,16 @@ All notable changes to garmin-mcp are documented here. The project uses semantic
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-31
+
 ### Added
 
 - **`get_daily_briefing`** — a composite tool that fuses the recovery and training-load signals (sleep, HRV, Body Battery, training readiness, training load, resting HR) into one payload, fetched concurrently. Each section degrades to `null` (and is named in `sections_unavailable`) instead of failing the whole briefing, and the response adds `rhr_vs_baseline_bpm` — the most recent resting HR relative to its trailing average. Returns facts only; no training advice is computed server-side.
+
+### Docs
+
+- README now opens with an animated demo GIF (`docs/demo.gif`), generated reproducibly from sample data by `scripts/make_demo_gif.py`.
+- Added `server.json` (MCP registry manifest) and `docs/launch.md` (registry/awesome-list submission steps and a launch-post draft) to support wider distribution.
 
 ## [0.3.1] — 2026-05-30
 
@@ -99,7 +106,8 @@ Six new tools, taking the total from 9 to 15:
 - `garminconnect` wrapper with persistent session tokens, transparent re-auth, exponential-backoff retry, and 1-req/2s rate limiting.
 - Saved tokens default to the user's platform cache directory (`~/.cache/garmin-mcp/garth/` on Linux, equivalent on macOS / Windows). `GARMIN_TOKEN_DIR` env var overrides for Cloud Run.
 
-[Unreleased]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.2.2...v0.2.3
