@@ -15,6 +15,7 @@ Single-user, and read-only by default — with one **opt-in** write path for cre
 
 | Tool                       | What it returns                                                              |
 | -------------------------- | ---------------------------------------------------------------------------- |
+| `get_daily_briefing`       | **One-call morning snapshot** — fuses sleep, HRV, Body Battery, readiness, training load, and resting HR (plus RHR vs. your baseline) so Claude can reason across them in a single shot. Each section degrades to `null` if unavailable. |
 | `get_sleep`                | Sleep duration, stages (deep / light / REM / awake), score, overnight HRV.   |
 | `get_recent_activities`    | List of recent activities with type, duration, distance, average heart rate. |
 | `get_activity_details`     | Full metrics for one activity, including splits, HR zones, and power.        |

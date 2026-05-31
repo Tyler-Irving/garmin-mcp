@@ -300,6 +300,36 @@ class WeeklySummary(_StrictBase):
     note: str | None = None
 
 
+class DailyBriefing(_StrictBase):
+    """A one-call morning snapshot fusing the key recovery and load signals.
+
+    Each section mirrors the standalone tool's model and is ``None`` when that
+    data could not be fetched (its name then appears in ``sections_unavailable``).
+    The server returns facts only — it computes no training advice; any
+    interpretation is left to the caller.
+    """
+
+    date: str = Field(description="Calendar date the briefing is anchored to, YYYY-MM-DD.")
+    sleep: SleepSummary | None = None
+    hrv: HRVStatus | None = None
+    body_battery: BodyBatterySummary | None = None
+    training_readiness: TrainingReadiness | None = None
+    training_load: TrainingLoadSummary | None = None
+    resting_heart_rate: RestingHeartRateTrend | None = None
+    rhr_vs_baseline_bpm: float | None = Field(
+        default=None,
+        description=(
+            "Most recent resting HR minus the trailing average of the prior days "
+            "in the window. Positive means elevated vs baseline (often a recovery "
+            "or illness signal). Null when fewer than two days of data exist."
+        ),
+    )
+    sections_unavailable: list[str] = Field(
+        default_factory=list,
+        description="Names of sections that could not be fetched for this briefing.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Strength workout creation (write) — inputs
 # ---------------------------------------------------------------------------

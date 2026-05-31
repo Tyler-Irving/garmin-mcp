@@ -14,6 +14,7 @@ process. See ``.env.example`` for the full list.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -59,6 +60,7 @@ from garmin_mcp.models import (
     BodyBatterySummary,
     BodyCompositionDay,
     BodyCompositionTrend,
+    DailyBriefing,
     FitnessMetrics,
     HRVDayReading,
     HRVStatus,
@@ -245,6 +247,22 @@ def _seconds_to_iso_local(epoch_ms: int | None) -> str | None:
         return datetime.fromtimestamp(int(epoch_ms) / 1000.0).isoformat()
     except (TypeError, ValueError, OSError):
         return None
+
+
+def _rhr_deviation(trend: RestingHeartRateTrend) -> float | None:
+    """Most recent RHR minus the average of the prior days in the window.
+
+    The trailing average excludes the latest reading so a single elevated day
+    stands out against its own baseline rather than being diluted by it.
+    Returns None when fewer than two days of data are present.
+    """
+    values = [d.rhr_bpm for d in trend.days if d.rhr_bpm is not None]
+    if len(values) < 2:
+        return None
+    latest = values[-1]
+    prior = values[:-1]
+    baseline = sum(prior) / len(prior)
+    return round(latest - baseline, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +508,64 @@ async def get_training_readiness(date: str | None = None) -> TrainingReadiness:
 
     result: TrainingReadiness = await _cache.get_or_compute(cache_key, 3600, fetch)
     return result
+
+
+@mcp.tool()
+async def get_daily_briefing(date: str | None = None) -> DailyBriefing:
+    """One-call morning snapshot: sleep, HRV, Body Battery, readiness, load, and RHR.
+
+    Fuses the individual recovery and training-load tools into a single payload so
+    you can reason across them in one shot instead of making six separate calls.
+    Each section is fetched independently and concurrently; a section that fails
+    comes back ``null`` and is named in ``sections_unavailable`` rather than
+    failing the whole briefing. Also returns ``rhr_vs_baseline_bpm``, the most
+    recent resting HR relative to its trailing average.
+
+    The server returns facts only and computes no training advice — interpret the
+    numbers yourself (e.g. weigh readiness, HRV status, and Body Battery together).
+
+    Args:
+        date: Calendar date in YYYY-MM-DD format. Defaults to today. The
+            sleep, HRV, training-load, and resting-HR sections use their own
+            most-recent windows regardless of this value.
+    """
+    target_date = _normalise_date(date, _today_iso())
+
+    # Each child tool is already individually cached, so the briefing is cheap on
+    # repeat calls. return_exceptions=True keeps one failing section from sinking
+    # the rest — we record which sections dropped out instead.
+    section_names = (
+        "sleep",
+        "hrv",
+        "body_battery",
+        "training_readiness",
+        "training_load",
+        "resting_heart_rate",
+    )
+    coros = (
+        get_sleep(date),
+        get_hrv_status(),
+        get_body_battery(date),
+        get_training_readiness(date),
+        get_training_load(),
+        get_resting_heart_rate(),
+    )
+    results = await asyncio.gather(*coros, return_exceptions=True)
+
+    fields: dict[str, Any] = {"date": target_date}
+    unavailable: list[str] = []
+    for name, result in zip(section_names, results, strict=True):
+        if isinstance(result, BaseException):
+            log.warning("daily_briefing.section.failed", section=name, error=str(result)[:200])
+            fields[name] = None
+            unavailable.append(name)
+        else:
+            fields[name] = result
+
+    rhr = fields.get("resting_heart_rate")
+    fields["rhr_vs_baseline_bpm"] = _rhr_deviation(rhr) if rhr is not None else None
+    fields["sections_unavailable"] = unavailable
+    return DailyBriefing(**fields)
 
 
 @mcp.tool()
