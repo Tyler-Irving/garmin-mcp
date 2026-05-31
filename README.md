@@ -4,6 +4,12 @@
 
 An [MCP](https://modelcontextprotocol.io/) server that exposes your Garmin Connect data to Claude as tools. Ask things like *"how did I sleep last night?"* or *"summarise my training load this week"* and Claude answers using your real Garmin data instead of you copy-pasting screenshots from the app.
 
+<p align="center">
+  <img src="docs/demo.gif" alt="Asking Claude for a Garmin morning briefing; it calls get_daily_briefing and returns a fused snapshot of sleep, HRV, Body Battery, readiness, training load, and resting HR." width="760">
+</p>
+
+<sub>Demo uses sample data. Regenerate with <code>uv run --with pillow python scripts/make_demo_gif.py</code>.</sub>
+
 Single-user, and read-only by default — with one **opt-in** write path for creating strength workouts (see [Write tools](#write-tools-opt-in)). Two ways to run it:
 
 | Mode                 | Where it runs           | Works with                       | Setup            |
