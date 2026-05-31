@@ -75,11 +75,11 @@ def _border(top: bool) -> list:
 CARD: list[list] = [
     _border(top=True),
     _card_row("Sleep", [("82", FG, True), ("  GOOD   7h32m  deep 1h12m", DIM, False)]),
-    _card_row("HRV", [("BALANCED", GREEN, True), ("  54 ms   base 45–68", DIM, False)]),
+    _card_row("HRV", [("BALANCED", GREEN, True), ("  54 ms   base 45–68", DIM, False)]),  # noqa: RUF001
     _card_row("Body Battery", [("78", FG, True), ("  ▲ charged 61 · drained 12", DIM, False)]),
     _card_row("Readiness", [("88 PRIME", GREEN, True), ("  ready to train", DIM, False)]),
     _card_row("Training", [("PRODUCTIVE", CYAN, True), ("  load 320", DIM, False)]),
-    _card_row("Resting HR", [("52 bpm", FG, True), ("  ", DIM, False), ("−2.0 vs base ▼", GREEN, False)]),
+    _card_row("Resting HR", [("52 bpm", FG, True), ("  ", DIM, False), ("−2.0 vs base ▼", GREEN, False)]),  # noqa: RUF001
     _border(top=False),
 ]
 
@@ -109,7 +109,7 @@ def _screen(typed: int, *, calling: bool = False, card_rows: int = 0) -> list[li
     """Assemble the visible screen for a moment in the animation."""
     lines: list[list] = []
     cursor = [("█", CURSOR, False)] if typed <= len(PROMPT_TEXT) and card_rows == 0 else []
-    lines.append([("❯ ", PROMPT, True), (PROMPT_TEXT[:typed], FG, False), *cursor])
+    lines.append([("❯ ", PROMPT, True), (PROMPT_TEXT[:typed], FG, False), *cursor])  # noqa: RUF001
     if calling or card_rows:
         lines.append([])
         lines.append([("  → calling ", DIM, False), ("get_daily_briefing", YELLOW, False), ("…", DIM, False)])
