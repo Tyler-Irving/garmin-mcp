@@ -525,9 +525,11 @@ async def get_daily_briefing(date: str | None = None) -> DailyBriefing:
     numbers yourself (e.g. weigh readiness, HRV status, and Body Battery together).
 
     Args:
-        date: Calendar date in YYYY-MM-DD format. Defaults to today. The
-            sleep, HRV, training-load, and resting-HR sections use their own
-            most-recent windows regardless of this value.
+        date: Calendar date in YYYY-MM-DD format. Defaults to today. The sleep,
+            Body Battery, and training-readiness sections honour this date; the
+            HRV, training-load, and resting-HR sections always report their own
+            most-recent trailing window. For the default (this-morning) call
+            everything lines up; passing a past date yields a mixed snapshot.
     """
     target_date = _normalise_date(date, _today_iso())
 
