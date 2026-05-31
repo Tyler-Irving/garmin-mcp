@@ -4,6 +4,10 @@ All notable changes to garmin-mcp are documented here. The project uses semantic
 
 ## [Unreleased]
 
+### Added
+
+- **`get_daily_briefing`** — a composite tool that fuses the recovery and training-load signals (sleep, HRV, Body Battery, training readiness, training load, resting HR) into one payload, fetched concurrently. Each section degrades to `null` (and is named in `sections_unavailable`) instead of failing the whole briefing, and the response adds `rhr_vs_baseline_bpm` — the most recent resting HR relative to its trailing average. Returns facts only; no training advice is computed server-side.
+
 ## [0.3.1] — 2026-05-30
 
 ### Added

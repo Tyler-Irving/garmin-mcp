@@ -15,6 +15,7 @@ import pytest
 from garmin_mcp import server as server_module
 from garmin_mcp.models import (
     BodyCompositionTrend,
+    DailyBriefing,
     FitnessMetrics,
     PersonalRecords,
     RespirationSummary,
@@ -286,3 +287,105 @@ async def test_respiration_synthesises_avg_when_missing() -> None:
     result = await server_module.get_respiration(date="2026-05-09")
     assert result.avg_breaths_per_min == pytest.approx(15.0)
     assert result.note is None
+
+
+# ---------------------------------------------------------------------------
+# get_daily_briefing — composite fusion tool
+# ---------------------------------------------------------------------------
+
+HRV_RAW: dict[str, Any] = {
+    "hrvSummary": {
+        "calendarDate": "2026-05-10",
+        "lastNightAvg": 55.0,
+        "weeklyAvg": 54.0,
+        "status": "BALANCED",
+        "baseline": {"lowUpper": 40.0, "balancedUpper": 70.0},
+        "feedbackPhrase": "Your HRV is balanced.",
+    }
+}
+
+BODY_BATTERY_RAW: list[dict[str, Any]] = [
+    {
+        "date": "2026-05-10",
+        "bodyBatteryValuesArray": [
+            [1715300000000, "CHARGED", 60],
+            [1715303600000, "DRAINED", 72],
+        ],
+    }
+]
+
+TRAINING_STATUS_RAW: dict[str, Any] = {
+    "acuteTrainingLoadDTO": {"acuteTrainingLoad": 300.0, "chronicTrainingLoad": 280.0},
+    "mostRecentTrainingStatus": {
+        "latestTrainingStatusData": {"1": {"trainingStatus": "PRODUCTIVE"}}
+    },
+}
+
+
+def _rhr_ramp() -> Any:
+    """A get_rhr_day double returning 50, 51, 52, ... across the 7-day loop.
+
+    The briefing's RHR section is fetched oldest-day-first, so the final
+    (newest) reading is 56 against a prior-day baseline of 52.5 → +3.5 bpm.
+    """
+    counter = {"n": 0}
+
+    def _respond(_date: str) -> dict[str, Any]:
+        value = 50 + counter["n"]
+        counter["n"] += 1
+        return {
+            "allMetrics": {"metricsMap": {"WELLNESS_RESTING_HEART_RATE": [{"value": value}]}}
+        }
+
+    return _respond
+
+
+def _briefing_responses() -> dict[str, Any]:
+    return {
+        "get_sleep_data": {
+            "dailySleepDTO": {
+                "calendarDate": "2026-05-10",
+                "sleepScores": {"overall": {"value": 80}},
+            }
+        },
+        "get_hrv_data": HRV_RAW,
+        "get_body_battery": BODY_BATTERY_RAW,
+        "get_training_readiness": READINESS_PAYLOAD,
+        "get_training_status": TRAINING_STATUS_RAW,
+        "get_rhr_day": _rhr_ramp(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_daily_briefing_fuses_all_sections() -> None:
+    server_module.set_garmin_client_for_testing(FakeGarminClient(_briefing_responses()))
+    result = await server_module.get_daily_briefing(date="2026-05-10")
+
+    assert isinstance(result, DailyBriefing)
+    assert result.date == "2026-05-10"
+    # Every section resolved, none dropped out.
+    assert result.sleep is not None
+    assert result.hrv is not None and result.hrv.status == "BALANCED"
+    assert result.body_battery is not None
+    assert result.training_readiness is not None and result.training_readiness.score == 78
+    assert result.training_load is not None
+    assert result.resting_heart_rate is not None
+    assert result.sections_unavailable == []
+    # Newest RHR (56) vs the trailing average of the prior six days (52.5).
+    assert result.rhr_vs_baseline_bpm == pytest.approx(3.5)
+
+
+@pytest.mark.asyncio
+async def test_daily_briefing_degrades_when_a_section_fails() -> None:
+    # Omit get_body_battery so the fake client raises for it; the briefing must
+    # null that one section and carry on rather than failing wholesale.
+    responses = _briefing_responses()
+    del responses["get_body_battery"]
+    server_module.set_garmin_client_for_testing(FakeGarminClient(responses))
+
+    result = await server_module.get_daily_briefing(date="2026-05-10")
+    assert result.body_battery is None
+    assert "body_battery" in result.sections_unavailable
+    # The other sections are unaffected.
+    assert result.sleep is not None
+    assert result.training_readiness is not None
