@@ -1721,8 +1721,10 @@ _LB_PER_KG = 2.2046226218
 
 
 def _grams_to_kg(value: Any) -> float | None:
+    # A recorded weight of 0 means the set was logged without added load
+    # (bodyweight), so report None rather than a misleading 0.0.
     grams = _opt_float(value)
-    return round(grams / 1000.0, 2) if grams is not None else None
+    return round(grams / 1000.0, 2) if grams else None
 
 
 def _kg_to_lb(weight_kg: float | None) -> float | None:
