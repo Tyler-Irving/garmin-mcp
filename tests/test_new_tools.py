@@ -314,10 +314,23 @@ BODY_BATTERY_RAW: list[dict[str, Any]] = [
     }
 ]
 
+# Real Garmin shape: the load numbers are nested per-device under
+# mostRecentTrainingStatus.latestTrainingStatusData, NOT at the top level.
 TRAINING_STATUS_RAW: dict[str, Any] = {
-    "acuteTrainingLoadDTO": {"acuteTrainingLoad": 300.0, "chronicTrainingLoad": 280.0},
     "mostRecentTrainingStatus": {
-        "latestTrainingStatusData": {"1": {"trainingStatus": "PRODUCTIVE"}}
+        "latestTrainingStatusData": {
+            "3626073413": {
+                "trainingStatusFeedbackPhrase": "PRODUCTIVE_1",
+                "weeklyTrainingLoad": 410,
+                "primaryTrainingDevice": True,
+                "acuteTrainingLoadDTO": {
+                    "dailyTrainingLoadAcute": 300,
+                    "dailyTrainingLoadChronic": 280,
+                    "acwrPercent": 107,
+                    "acwrStatus": "OPTIMAL",
+                },
+            }
+        }
     },
 }
 
