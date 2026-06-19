@@ -1089,12 +1089,29 @@ def _parse_activity_detail(
     return detail
 
 
+def _extract_atl_dto(raw: Any) -> dict[str, Any]:
+    """Extract acuteTrainingLoadDTO from a get_training_status response entry.
+
+    Garmin nests this object under
+    ``mostRecentTrainingStatus.latestTrainingStatusData.<deviceId>.acuteTrainingLoadDTO``,
+    not at the top level of the response as one might expect.
+    """
+    most_recent = (raw or {}).get("mostRecentTrainingStatus") or {}
+    if isinstance(most_recent, dict):
+        latest = most_recent.get("latestTrainingStatusData") or {}
+        if isinstance(latest, dict):
+            for entry in latest.values():
+                if isinstance(entry, dict):
+                    atl = entry.get("acuteTrainingLoadDTO")
+                    if isinstance(atl, dict):
+                        return atl
+    return {}
+
+
 def _parse_training_load_day(date: str, raw: Any) -> TrainingLoadDay:
     if not isinstance(raw, dict):
         return TrainingLoadDay(date=date)
-    atl_dto = raw.get("acuteTrainingLoadDTO") or {}
-    if not isinstance(atl_dto, dict):
-        atl_dto = {}
+    atl_dto = _extract_atl_dto(raw)
     most_recent = raw.get("mostRecentTrainingStatus") or {}
     status_str: str | None = None
     if isinstance(most_recent, dict):
@@ -1110,8 +1127,8 @@ def _parse_training_load_day(date: str, raw: Any) -> TrainingLoadDay:
     return TrainingLoadDay(
         date=date,
         daily_training_load=_opt_float(atl_dto.get("dailyTrainingLoadAcute")),
-        acute_training_load=_opt_float(atl_dto.get("acuteTrainingLoad")),
-        chronic_training_load=_opt_float(atl_dto.get("chronicTrainingLoad")),
+        acute_training_load=_opt_float(atl_dto.get("dailyTrainingLoadAcute")),
+        chronic_training_load=_opt_float(atl_dto.get("dailyTrainingLoadChronic")),
         training_status=status_str,
     )
 
@@ -1124,10 +1141,10 @@ def _build_training_load_summary(
     current_atl = None
     current_ctl = None
     if latest_status is not None:
-        atl_dto = latest_status.get("acuteTrainingLoadDTO") or {}
-        if isinstance(atl_dto, dict):
-            current_atl = _opt_float(atl_dto.get("acuteTrainingLoad"))
-            current_ctl = _opt_float(atl_dto.get("chronicTrainingLoad"))
+        atl_dto = _extract_atl_dto(latest_status)
+        if atl_dto:
+            current_atl = _opt_float(atl_dto.get("dailyTrainingLoadAcute"))
+            current_ctl = _opt_float(atl_dto.get("dailyTrainingLoadChronic"))
     for day in reversed(per_day):
         if day.training_status is not None:
             current_status = day.training_status
