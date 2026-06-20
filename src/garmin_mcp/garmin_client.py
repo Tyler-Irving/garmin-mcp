@@ -74,8 +74,8 @@ _READ_METHODS: frozenset[str] = frozenset(
         "get_workout_by_id",
     }
 )
-# Deliberately minimal: create only. No delete_workout / schedule_workout.
-_WRITE_METHODS: frozenset[str] = frozenset({"upload_workout"})
+# Deliberately minimal: create and schedule only. No delete_workout.
+_WRITE_METHODS: frozenset[str] = frozenset({"upload_workout", "schedule_workout", "unschedule_workout"})
 
 
 class GarminClient:

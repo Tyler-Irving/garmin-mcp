@@ -72,6 +72,11 @@ from garmin_mcp.models import (
     RespirationSummary,
     RestingHeartRateTrend,
     RHRDay,
+    RunningWorkoutCreated,
+    RunningWorkoutInput,
+    RunningRepeatInput,
+    RunningStepInput,
+    ScheduledWorkout,
     SleepSummary,
     StepsAndCalories,
     StrengthWorkoutCreated,
@@ -938,6 +943,247 @@ async def create_strength_workout(
         verified=verified,
         blank_steps=blanks,
     )
+
+
+# ---------------------------------------------------------------------------
+# Running workout helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_pace(pace_str: str) -> float:
+    """Convert 'M:SS' pace per km to speed in m/s.
+
+    '3:35' -> 1000 / 215 = 4.651 m/s
+    """
+    parts = pace_str.strip().split(":")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid pace format '{pace_str}': expected 'M:SS' (e.g. '3:35')")
+    try:
+        minutes, seconds = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise ValueError(f"Invalid pace format '{pace_str}': expected 'M:SS' (e.g. '3:35')")
+    total_seconds = minutes * 60 + seconds
+    if total_seconds <= 0:
+        raise ValueError(f"Pace must be positive, got '{pace_str}'")
+    return 1000.0 / total_seconds
+
+
+_STEP_TYPE_MAP: dict[str, tuple[int, str, int]] = {
+    "warmup":   (1, "warmup",   1),
+    "cooldown": (2, "cooldown", 2),
+    "interval": (3, "interval", 3),
+    "recovery": (4, "recovery", 4),
+    "rest":     (5, "rest",     5),
+    "active":   (8, "main",     8),
+}
+
+_CONDITION_TIME     = {"conditionTypeId": 2, "conditionTypeKey": "time",     "displayOrder": 2, "displayable": True}
+_CONDITION_DISTANCE = {"conditionTypeId": 3, "conditionTypeKey": "distance", "displayOrder": 3, "displayable": True}
+_TARGET_NONE        = {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "displayOrder": 1}
+_TARGET_PACE        = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone", "displayOrder": 6}
+_SPORT_RUNNING      = {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1}
+
+
+def _build_executable_step(step: RunningStepInput, step_order: int, child_step_id: int | None = None) -> dict[str, Any]:
+    """Convert a RunningStepInput to a Garmin ExecutableStepDTO dict."""
+    type_key = step.type.lower()
+    if type_key not in _STEP_TYPE_MAP:
+        raise ValueError(
+            f"Unknown step type '{step.type}'. Valid types: {', '.join(_STEP_TYPE_MAP)}"
+        )
+    type_id, type_key_str, type_display = _STEP_TYPE_MAP[type_key]
+
+    if step.duration_seconds is not None and step.distance_meters is not None:
+        raise ValueError("Specify either duration_seconds or distance_meters, not both.")
+    if step.duration_seconds is None and step.distance_meters is None:
+        raise ValueError(f"Step '{step.type}' requires either duration_seconds or distance_meters.")
+
+    end_condition = _CONDITION_DISTANCE if step.distance_meters is not None else _CONDITION_TIME
+    end_value = float(step.distance_meters if step.distance_meters is not None else step.duration_seconds)
+
+    has_pace = step.pace_min_per_km is not None or step.pace_max_per_km is not None
+    if has_pace and (step.pace_min_per_km is None or step.pace_max_per_km is None):
+        raise ValueError("Provide both pace_min_per_km and pace_max_per_km, or neither.")
+
+    out: dict[str, Any] = {
+        "type": "ExecutableStepDTO",
+        "stepOrder": step_order,
+        "stepType": {"stepTypeId": type_id, "stepTypeKey": type_key_str, "displayOrder": type_display},
+        "endCondition": end_condition,
+        "endConditionValue": end_value,
+        "targetType": _TARGET_PACE if has_pace else _TARGET_NONE,
+    }
+    if child_step_id is not None:
+        out["childStepId"] = child_step_id
+    if has_pace:
+        # Garmin stores speed in m/s; pace_min (faster) → higher m/s = targetValueTwo
+        out["targetValueOne"] = _parse_pace(step.pace_max_per_km)   # slower bound
+        out["targetValueTwo"] = _parse_pace(step.pace_min_per_km)   # faster bound
+    if step.note:
+        out["description"] = step.note
+    return out
+
+
+def _build_workout_payload(workout: RunningWorkoutInput) -> dict[str, Any]:
+    """Build the full Garmin workout JSON payload from a RunningWorkoutInput."""
+    garmin_steps: list[dict[str, Any]] = []
+    step_order = 1
+    child_step_counter = 1
+
+    for item in workout.steps:
+        if isinstance(item, RunningRepeatInput):
+            # Collect inner steps
+            inner: list[dict[str, Any]] = []
+            child_id = child_step_counter
+            child_step_counter += 1
+            for inner_step in item.steps:
+                inner.append(_build_executable_step(inner_step, step_order, child_step_id=child_id))
+                step_order += 1
+
+            garmin_steps.append({
+                "type": "RepeatGroupDTO",
+                "stepOrder": step_order,
+                "stepType": {"stepTypeId": 6, "stepTypeKey": "repeat", "displayOrder": 6},
+                "childStepId": child_id,
+                "numberOfIterations": item.iterations,
+                "workoutSteps": inner,
+                "endCondition": {"conditionTypeId": 7, "conditionTypeKey": "iterations", "displayOrder": 7, "displayable": False},
+                "endConditionValue": float(item.iterations),
+                "smartRepeat": False,
+            })
+            step_order += 1
+        else:
+            garmin_steps.append(_build_executable_step(item, step_order))
+            step_order += 1
+
+    estimated_secs = 0
+    for item in workout.steps:
+        if isinstance(item, RunningRepeatInput):
+            for s in item.steps:
+                estimated_secs += (s.duration_seconds or 0) * item.iterations
+        else:
+            estimated_secs += item.duration_seconds or 0
+
+    payload: dict[str, Any] = {
+        "workoutName": workout.name,
+        "sportType": _SPORT_RUNNING,
+        "estimatedDurationInSecs": estimated_secs,
+        "workoutSegments": [
+            {
+                "segmentOrder": 1,
+                "sportType": _SPORT_RUNNING,
+                "workoutSteps": garmin_steps,
+            }
+        ],
+    }
+    if workout.description:
+        payload["description"] = workout.description
+    return payload
+
+
+@mcp.tool()
+async def create_running_workout(workout: RunningWorkoutInput) -> RunningWorkoutCreated:
+    """Create a structured running workout in your Garmin Connect library (a WRITE).
+
+    Supports warmup/cooldown steps, repeat groups for intervals, and optional
+    pace targets. After creation the workout is in your library — to get it on
+    the watch use ``schedule_running_workout`` (schedules it for a calendar date
+    so it syncs on the next Bluetooth/Wi-Fi sync) or open Garmin Connect and
+    tap "Send to Device".
+
+    Requires GARMIN_WRITE_ENABLED=1.
+
+    Example — 5 × 1 km intervals at 3:35–3:40 /km:
+
+        name: "Intervals 5x1km"
+        steps:
+          - type: warmup, duration_seconds: 600
+          - iterations: 5, steps:
+              - type: interval, distance_meters: 1000,
+                pace_min_per_km: "3:35", pace_max_per_km: "3:40"
+              - type: recovery, duration_seconds: 90
+          - type: cooldown, duration_seconds: 600
+    """
+    if not WRITE_ENABLED:
+        raise ValueError("Writes are disabled. Set GARMIN_WRITE_ENABLED=1 to allow creating workouts.")
+
+    payload = _build_workout_payload(workout)
+    client = _get_garmin()
+    log.info("running_workout.create.attempt", name=workout.name)
+    result = await client.call("upload_workout", payload)
+
+    workout_id = (
+        str(result["workoutId"])
+        if isinstance(result, dict) and result.get("workoutId") is not None
+        else None
+    )
+    log.info("running_workout.create.success", workout_id=workout_id, name=workout.name)
+
+    status = (
+        f"Created '{workout.name}'"
+        + (f" (id {workout_id})" if workout_id else "")
+        + " in your Garmin Connect library. Use schedule_running_workout to add it to your "
+        "calendar so it syncs to the watch automatically."
+    )
+    return RunningWorkoutCreated(workout_id=workout_id, name=workout.name, status=status)
+
+
+@mcp.tool()
+async def schedule_running_workout(workout_id: str, date: str) -> ScheduledWorkout:
+    """Schedule an existing workout to a calendar date so it syncs to the watch (a WRITE).
+
+    Once scheduled, the workout appears in the Garmin Connect calendar for that
+    date and is pushed to the watch on the next Bluetooth/Wi-Fi sync.  You can
+    find the ``workout_id`` in the result of ``create_running_workout`` or
+    ``create_strength_workout``.
+
+    Args:
+        workout_id: Numeric workout ID (from create_running_workout or Garmin Connect).
+        date: Target date in YYYY-MM-DD format.
+
+    Requires GARMIN_WRITE_ENABLED=1.
+    """
+    if not WRITE_ENABLED:
+        raise ValueError("Writes are disabled. Set GARMIN_WRITE_ENABLED=1 to allow scheduling workouts.")
+
+    client = _get_garmin()
+    log.info("workout.schedule.attempt", workout_id=workout_id, date=date)
+    result = await client.call("schedule_workout", int(workout_id), date)
+
+    schedule_id = str(result.get("workoutScheduleId", "")) if isinstance(result, dict) else ""
+    workout_name = result.get("workout", {}).get("workoutName", "") if isinstance(result, dict) else ""
+    calendar_date = result.get("calendarDate", date) if isinstance(result, dict) else date
+
+    log.info("workout.schedule.success", schedule_id=schedule_id, date=calendar_date)
+    return ScheduledWorkout(
+        schedule_id=schedule_id,
+        workout_id=workout_id,
+        workout_name=workout_name,
+        calendar_date=calendar_date,
+        status=(
+            f"'{workout_name}' scheduled for {calendar_date}. "
+            "It will appear on the watch after the next Garmin Connect sync "
+            "(Training > Workouts on the watch)."
+        ),
+    )
+
+
+@mcp.tool()
+async def unschedule_running_workout(schedule_id: str) -> dict[str, str]:
+    """Remove a scheduled workout from the Garmin calendar without deleting the workout template (a WRITE).
+
+    Use the ``schedule_id`` returned by ``schedule_running_workout``.
+
+    Requires GARMIN_WRITE_ENABLED=1.
+    """
+    if not WRITE_ENABLED:
+        raise ValueError("Writes are disabled. Set GARMIN_WRITE_ENABLED=1 to allow this.")
+
+    client = _get_garmin()
+    log.info("workout.unschedule.attempt", schedule_id=schedule_id)
+    await client.call("unschedule_workout", int(schedule_id))
+    log.info("workout.unschedule.success", schedule_id=schedule_id)
+    return {"status": f"Scheduled workout {schedule_id} removed from calendar."}
 
 
 # ---------------------------------------------------------------------------
