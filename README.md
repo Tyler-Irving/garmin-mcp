@@ -25,7 +25,7 @@ Single-user, and read-only by default — with one **opt-in** write path for cre
 | `get_sleep`                | Sleep duration, stages (deep / light / REM / awake), score, overnight HRV.   |
 | `get_recent_activities`    | List of recent activities with type, duration, distance, average heart rate. |
 | `get_activity_details`     | Full metrics for one activity, including splits, HR zones, and power.        |
-| `get_training_load`        | Daily training load with acute (ATL), chronic (CTL), and current status.     |
+| `get_training_load`        | Daily training load with acute (ATL), chronic (CTL), ACWR, and current status. |
 | `get_training_readiness`   | Daily readiness score 0-100 with contributing factors (sleep, HRV, recovery).|
 | `get_hrv_status`           | Current HRV status, baseline range, and the last 7 nights of readings.       |
 | `get_body_battery`         | Body battery values across the day with min, max, charged, drained.          |
@@ -37,6 +37,10 @@ Single-user, and read-only by default — with one **opt-in** write path for cre
 | `get_personal_records`     | Personal records across activity types (fastest 1K/5K, longest run, etc.).   |
 | `get_body_composition`     | Weight, body fat, and muscle-mass trend over recent days.                    |
 | `get_weekly_summary`       | Weekly aggregates for steps, stress, or intensity minutes.                   |
+| `get_strength_sets`        | Set-by-set breakdown of a strength session: exercises, reps, weight, volume. |
+| `get_endurance_score`      | Garmin endurance score with its per-activity-type contributors.              |
+| `get_hill_score`           | Garmin hill score (climbing strength + endurance) for a date.                |
+| `get_activity_weather`     | Weather recorded during an activity (temp, humidity, wind).                  |
 
 Every response is a Pydantic model serialised to JSON, with `null` for fields Garmin did not record.
 

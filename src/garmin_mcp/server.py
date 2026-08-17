@@ -56,12 +56,16 @@ from garmin_mcp.models import (
     ActivityDetail,
     ActivityList,
     ActivitySplit,
+    ActivityWeather,
     BodyBatteryReading,
     BodyBatterySummary,
     BodyCompositionDay,
     BodyCompositionTrend,
     DailyBriefing,
+    EnduranceContributor,
+    EnduranceScore,
     FitnessMetrics,
+    HillScore,
     HRVDayReading,
     HRVStatus,
     HRZone,
@@ -74,6 +78,9 @@ from garmin_mcp.models import (
     RHRDay,
     SleepSummary,
     StepsAndCalories,
+    StrengthExerciseSummary,
+    StrengthSession,
+    StrengthSet,
     StrengthWorkoutCreated,
     StrengthWorkoutInput,
     StrengthWorkoutPreview,
@@ -482,7 +489,14 @@ async def get_stress(date: str | None = None) -> StressSummary:
     async def fetch() -> StressSummary:
         client = _get_garmin()
         raw = await client.call("get_stress_data", target_date)
-        return _parse_stress(raw, target_date)
+        # The time-in-zone breakdown is not in get_stress_data; it lives on the
+        # daily user summary. Fetch it too so rest/low/medium/high minutes populate.
+        try:
+            summary = await client.call("get_user_summary", target_date)
+        except GarminClientError as exc:
+            log.warning("stress.user_summary.failed", date=target_date, error=str(exc)[:200])
+            summary = None
+        return _parse_stress(raw, target_date, summary)
 
     result: StressSummary = await _cache.get_or_compute(cache_key, 3600, fetch)
     return result
@@ -708,9 +722,114 @@ async def get_weekly_summary(
             raw = await client.call("get_weekly_steps", end, weeks)
         else:  # stress
             raw = await client.call("get_weekly_stress", end, weeks)
-        return _parse_weekly_summary(metric_norm, raw)
+        return _parse_weekly_summary(metric_norm, raw, weeks)
 
     result: WeeklySummary = await _cache.get_or_compute(cache_key, 3600, fetch)
+    return result
+
+
+@mcp.tool()
+async def get_strength_sets(activity_id: str) -> StrengthSession:
+    """Set-by-set breakdown of a logged strength session: exercises, reps, and weight.
+
+    Parses Garmin's recorded sets for one ``strength_training`` activity into
+    working sets (with the recognised exercise, rep count, and load) plus a
+    per-exercise rollup and total training volume. Rest periods are included and
+    flagged. Sets Garmin could not classify come back with a null exercise name.
+
+    Args:
+        activity_id: The activity's numeric Garmin ID, from ``get_recent_activities``.
+    """
+    if not activity_id or not str(activity_id).strip():
+        raise ValueError("activity_id is required.")
+    cache_key = TTLCache.make_key("get_strength_sets", {"id": activity_id})
+
+    async def fetch() -> StrengthSession:
+        client = _get_garmin()
+        raw = await client.call("get_activity_exercise_sets", activity_id)
+        return _parse_strength_sets(activity_id, raw)
+
+    result: StrengthSession = await _cache.get_or_compute(cache_key, 86400, fetch)
+    return result
+
+
+@mcp.tool()
+async def get_endurance_score(date: str | None = None) -> EnduranceScore:
+    """Garmin endurance score with its activity-type contributors.
+
+    The endurance score reflects accumulated aerobic capacity across activities.
+    It only updates after qualifying activities, so a given day may have no value.
+
+    Args:
+        date: Calendar date in YYYY-MM-DD format. Defaults to today.
+    """
+    target_date = _normalise_date(date, _today_iso())
+    cache_key = TTLCache.make_key("get_endurance_score", {"date": target_date})
+
+    async def fetch() -> EnduranceScore:
+        client = _get_garmin()
+        try:
+            raw = await client.call("get_endurance_score", target_date)
+        except GarminClientError as exc:
+            log.warning("endurance_score.failed", date=target_date, error=str(exc)[:200])
+            raw = None
+        return _parse_endurance_score(target_date, raw)
+
+    result: EnduranceScore = await _cache.get_or_compute(cache_key, 86400, fetch)
+    return result
+
+
+@mcp.tool()
+async def get_hill_score(date: str | None = None) -> HillScore:
+    """Garmin hill score (climbing strength + endurance) for a date.
+
+    Combines a strength and an endurance component into an overall hill score.
+    Requires qualifying climbing efforts, so it is often empty for flat-terrain
+    athletes — an empty result is reported via ``note`` rather than an error.
+
+    Args:
+        date: Calendar date in YYYY-MM-DD format. Defaults to today.
+    """
+    target_date = _normalise_date(date, _today_iso())
+    cache_key = TTLCache.make_key("get_hill_score", {"date": target_date})
+
+    async def fetch() -> HillScore:
+        client = _get_garmin()
+        try:
+            raw = await client.call("get_hill_score", target_date)
+        except GarminClientError as exc:
+            log.warning("hill_score.failed", date=target_date, error=str(exc)[:200])
+            raw = None
+        return _parse_hill_score(target_date, raw)
+
+    result: HillScore = await _cache.get_or_compute(cache_key, 86400, fetch)
+    return result
+
+
+@mcp.tool()
+async def get_activity_weather(activity_id: str) -> ActivityWeather:
+    """Weather conditions recorded during an activity (temp, humidity, wind).
+
+    Units follow your Garmin account's measurement system (US accounts report
+    degrees Fahrenheit and mph).
+
+    Args:
+        activity_id: The activity's numeric Garmin ID, from ``get_recent_activities``.
+    """
+    if not activity_id or not str(activity_id).strip():
+        raise ValueError("activity_id is required.")
+    cache_key = TTLCache.make_key("get_activity_weather", {"id": activity_id})
+
+    async def fetch() -> ActivityWeather:
+        client = _get_garmin()
+        try:
+            raw = await client.call("get_activity_weather", activity_id)
+        except GarminClientError as exc:
+            log.warning("activity_weather.failed", activity_id=activity_id, error=str(exc)[:200])
+            raw = None
+        return _parse_activity_weather(activity_id, raw)
+
+    result: ActivityWeather = await _cache.get_or_compute(cache_key, 86400, fetch)
     return result
 
 
@@ -1089,29 +1208,47 @@ def _parse_activity_detail(
     return detail
 
 
+def _latest_status_entry(raw: Any) -> dict[str, Any] | None:
+    """The per-device training-status record from a ``get_training_status`` payload.
+
+    The numbers we want (acute/chronic load, ACWR, status phrase) are nested under
+    ``mostRecentTrainingStatus.latestTrainingStatusData.<deviceId>`` — NOT at the
+    top level. Prefer the primary training device when more than one is present.
+    """
+    if not isinstance(raw, dict):
+        return None
+    most_recent = raw.get("mostRecentTrainingStatus") or {}
+    if not isinstance(most_recent, dict):
+        return None
+    latest = most_recent.get("latestTrainingStatusData") or {}
+    if not isinstance(latest, dict):
+        return None
+    entries = [e for e in latest.values() if isinstance(e, dict)]
+    if not entries:
+        return None
+    for entry in entries:
+        if entry.get("primaryTrainingDevice"):
+            return entry
+    return entries[0]
+
+
 def _parse_training_load_day(date: str, raw: Any) -> TrainingLoadDay:
     if not isinstance(raw, dict):
         return TrainingLoadDay(date=date)
-    atl_dto = raw.get("acuteTrainingLoadDTO") or {}
+    entry = _latest_status_entry(raw)
+    if entry is None:
+        return TrainingLoadDay(date=date)
+    atl_dto = entry.get("acuteTrainingLoadDTO") or {}
     if not isinstance(atl_dto, dict):
         atl_dto = {}
-    most_recent = raw.get("mostRecentTrainingStatus") or {}
-    status_str: str | None = None
-    if isinstance(most_recent, dict):
-        latest = most_recent.get("latestTrainingStatusData") or {}
-        if isinstance(latest, dict):
-            for entry in latest.values():
-                if isinstance(entry, dict) and entry.get("trainingStatusFeedbackPhrase"):
-                    status_str = _opt_str(entry.get("trainingStatusFeedbackPhrase"))
-                    break
-                if isinstance(entry, dict) and entry.get("trainingStatus"):
-                    status_str = _opt_str(entry.get("trainingStatus"))
-                    break
+    status_str = _opt_str(entry.get("trainingStatusFeedbackPhrase"))
     return TrainingLoadDay(
         date=date,
-        daily_training_load=_opt_float(atl_dto.get("dailyTrainingLoadAcute")),
-        acute_training_load=_opt_float(atl_dto.get("acuteTrainingLoad")),
-        chronic_training_load=_opt_float(atl_dto.get("chronicTrainingLoad")),
+        # The endpoint carries acute/chronic load, not a single-day activity load;
+        # weeklyTrainingLoad is the closest per-record figure (often null).
+        daily_training_load=_opt_float(entry.get("weeklyTrainingLoad")),
+        acute_training_load=_opt_float(atl_dto.get("dailyTrainingLoadAcute")),
+        chronic_training_load=_opt_float(atl_dto.get("dailyTrainingLoadChronic")),
         training_status=status_str,
     )
 
@@ -1123,11 +1260,16 @@ def _build_training_load_summary(
     current_status = None
     current_atl = None
     current_ctl = None
-    if latest_status is not None:
-        atl_dto = latest_status.get("acuteTrainingLoadDTO") or {}
+    acwr_percent = None
+    acwr_status = None
+    entry = _latest_status_entry(latest_status)
+    if entry is not None:
+        atl_dto = entry.get("acuteTrainingLoadDTO") or {}
         if isinstance(atl_dto, dict):
-            current_atl = _opt_float(atl_dto.get("acuteTrainingLoad"))
-            current_ctl = _opt_float(atl_dto.get("chronicTrainingLoad"))
+            current_atl = _opt_float(atl_dto.get("dailyTrainingLoadAcute"))
+            current_ctl = _opt_float(atl_dto.get("dailyTrainingLoadChronic"))
+            acwr_percent = _opt_float(atl_dto.get("acwrPercent"))
+            acwr_status = _opt_str(atl_dto.get("acwrStatus"))
     for day in reversed(per_day):
         if day.training_status is not None:
             current_status = day.training_status
@@ -1137,6 +1279,8 @@ def _build_training_load_summary(
         current_status=current_status,
         current_atl=current_atl,
         current_ctl=current_ctl,
+        acwr_percent=acwr_percent,
+        acwr_status=acwr_status,
     )
 
 
@@ -1264,7 +1408,7 @@ def _parse_rhr_day(date: str, raw: Any) -> RHRDay:
     return RHRDay(date=date, rhr_bpm=rhr)
 
 
-def _parse_stress(raw: Any, date: str) -> StressSummary:
+def _parse_stress(raw: Any, date: str, summary: Any = None) -> StressSummary:
     if not isinstance(raw, dict):
         return StressSummary(date=date)
     timeline_raw = raw.get("stressValuesArray") or []
@@ -1277,14 +1421,17 @@ def _parse_stress(raw: Any, date: str) -> StressSummary:
             continue
         buckets.append(StressBucket(timestamp=ts_iso, stress_level=_opt_int(entry[1])))
 
+    # The duration breakdown is only on the daily user summary, not get_stress_data.
+    durations = summary if isinstance(summary, dict) else {}
+
     return StressSummary(
         date=_opt_str(raw.get("calendarDate")) or date,
         avg_stress=_opt_int(raw.get("avgStressLevel") or raw.get("averageStressLevel")),
         max_stress=_opt_int(raw.get("maxStressLevel")),
-        rest_minutes=_minutes_or_none(raw.get("restStressDuration")),
-        low_minutes=_minutes_or_none(raw.get("lowStressDuration")),
-        medium_minutes=_minutes_or_none(raw.get("mediumStressDuration")),
-        high_minutes=_minutes_or_none(raw.get("highStressDuration")),
+        rest_minutes=_minutes_or_none(durations.get("restStressDuration")),
+        low_minutes=_minutes_or_none(durations.get("lowStressDuration")),
+        medium_minutes=_minutes_or_none(durations.get("mediumStressDuration")),
+        high_minutes=_minutes_or_none(durations.get("highStressDuration")),
         timeline=buckets,
     )
 
@@ -1333,7 +1480,10 @@ def _parse_training_readiness(raw: Any, date: str) -> TrainingReadiness:
         sleep_history_score=_opt_int(payload.get("sleepHistoryFactorPercent")),
         recovery_time_hours=_opt_int(payload.get("recoveryTime")),
         acute_load=_opt_float(payload.get("acuteLoad")),
-        hrv_status=_opt_str(payload.get("hrvStatus")),
+        # The readiness payload exposes the HRV contribution as a factor feedback
+        # label (e.g. POOR/GOOD), not an "hrvStatus" key. Map it so the field
+        # isn't permanently null.
+        hrv_status=_opt_str(payload.get("hrvFactorFeedback")),
         stress_history=_opt_int(payload.get("stressHistoryFactorPercent")),
         factors=factors,
     )
@@ -1524,7 +1674,7 @@ def _parse_respiration(raw: Any, date: str) -> RespirationSummary:
     return summary
 
 
-def _parse_weekly_summary(metric: str, raw: Any) -> WeeklySummary:
+def _parse_weekly_summary(metric: str, raw: Any, limit: int | None = None) -> WeeklySummary:
     if not isinstance(raw, list) or not raw:
         return WeeklySummary(metric=metric, note="No data recorded for this window.")
 
@@ -1555,9 +1705,175 @@ def _parse_weekly_summary(metric: str, raw: Any) -> WeeklySummary:
             value = mod + vig * 2  # Garmin convention: vigorous counts double
         buckets.append(WeeklyBucket(week_start=week_start, value=value))
 
+    # get_weekly_intensity_minutes is queried by start date and returns one extra
+    # week (both endpoints inclusive); keep only the most recent ``limit`` weeks so
+    # the count matches what was requested, as the steps/stress paths already do.
+    buckets.sort(key=lambda b: b.week_start)
+    if limit is not None and len(buckets) > limit:
+        buckets = buckets[-limit:]
+
     values = [b.value for b in buckets if b.value is not None]
     avg = sum(values) / len(values) if values else None
     return WeeklySummary(metric=metric, weeks=buckets, avg_value=avg)
+
+
+_LB_PER_KG = 2.2046226218
+
+
+def _grams_to_kg(value: Any) -> float | None:
+    # A recorded weight of 0 means the set was logged without added load
+    # (bodyweight), so report None rather than a misleading 0.0.
+    grams = _opt_float(value)
+    return round(grams / 1000.0, 2) if grams else None
+
+
+def _kg_to_lb(weight_kg: float | None) -> float | None:
+    return round(weight_kg * _LB_PER_KG, 1) if weight_kg is not None else None
+
+
+def _parse_strength_sets(activity_id: str, raw: Any) -> StrengthSession:
+    sets_raw: Any = None
+    if isinstance(raw, dict):
+        sets_raw = raw.get("exerciseSets")
+    if not isinstance(sets_raw, list) or not sets_raw:
+        return StrengthSession(
+            activity_id=str(activity_id),
+            note="No recorded sets for this activity (not a strength session, or no set data).",
+        )
+
+    sets: list[StrengthSet] = []
+    # Aggregate working sets per exercise, keyed by (name or category).
+    rollup: dict[str, StrengthExerciseSummary] = {}
+    total_active = 0
+    total_reps = 0
+    total_volume = 0.0
+    have_volume = False
+
+    for idx, entry in enumerate(sets_raw):
+        if not isinstance(entry, dict):
+            continue
+        exercises = entry.get("exercises")
+        top = exercises[0] if isinstance(exercises, list) and exercises else {}
+        name = _opt_str(top.get("name")) if isinstance(top, dict) else None
+        category = _opt_str(top.get("category")) if isinstance(top, dict) else None
+        if category == "UNKNOWN":
+            category = None
+        reps = _opt_int(entry.get("repetitionCount"))
+        weight_kg = _grams_to_kg(entry.get("weight"))
+        weight_lb = _kg_to_lb(weight_kg)
+        set_type = _opt_str(entry.get("setType"))
+        sets.append(
+            StrengthSet(
+                set_index=_opt_int(entry.get("messageIndex")) or idx,
+                set_type=set_type,
+                exercise_name=name,
+                category=category,
+                reps=reps,
+                weight_kg=weight_kg,
+                weight_lb=weight_lb,
+                duration_seconds=_opt_float(entry.get("duration")),
+                start_time=_opt_str(entry.get("startTime")),
+            )
+        )
+
+        if set_type != "ACTIVE":
+            continue
+        total_active += 1
+        if reps is not None:
+            total_reps += reps
+        if reps is not None and weight_kg is not None:
+            total_volume += reps * weight_kg
+            have_volume = True
+
+        key = name or category or "UNKNOWN"
+        summary = rollup.get(key)
+        if summary is None:
+            summary = StrengthExerciseSummary(exercise_name=name, category=category)
+            rollup[key] = summary
+        summary.sets += 1
+        if reps is not None:
+            summary.total_reps += reps
+        if weight_kg is not None and (
+            summary.max_weight_kg is None or weight_kg > summary.max_weight_kg
+        ):
+            summary.max_weight_kg = weight_kg
+            summary.max_weight_lb = weight_lb
+
+    return StrengthSession(
+        activity_id=str(activity_id),
+        total_active_sets=total_active,
+        total_reps=total_reps,
+        total_volume_kg=round(total_volume, 1) if have_volume else None,
+        exercises=list(rollup.values()),
+        sets=sets,
+    )
+
+
+def _parse_endurance_score(date: str, raw: Any) -> EnduranceScore:
+    payload = _first_dict(raw)
+    if payload is None:
+        return EnduranceScore(date=date, note="No endurance score recorded for this date.")
+    contributors: list[EnduranceContributor] = []
+    for c in payload.get("contributors") or []:
+        if not isinstance(c, dict):
+            continue
+        contributors.append(
+            EnduranceContributor(
+                activity_type_id=_opt_int(c.get("activityTypeId")),
+                group=_opt_int(c.get("group")),
+                contribution_percent=_opt_float(c.get("contribution")),
+            )
+        )
+    return EnduranceScore(
+        date=_opt_str(payload.get("calendarDate")) or date,
+        overall_score=_opt_int(payload.get("overallScore")),
+        classification=_opt_int(payload.get("classification")),
+        feedback_phrase_id=_opt_int(payload.get("feedbackPhrase")),
+        gauge_lower_limit=_opt_int(payload.get("gaugeLowerLimit")),
+        gauge_upper_limit=_opt_int(payload.get("gaugeUpperLimit")),
+        contributors=contributors,
+        note=None if payload.get("overallScore") is not None else "No endurance score for this date.",
+    )
+
+
+def _parse_hill_score(date: str, raw: Any) -> HillScore:
+    payload = _first_dict(raw)
+    if payload is None:
+        return HillScore(date=date, note="No hill score recorded for this date.")
+    overall = _opt_int(payload.get("overallScore"))
+    return HillScore(
+        date=_opt_str(payload.get("calendarDate")) or date,
+        overall_score=overall,
+        strength_score=_opt_int(payload.get("strengthScore")),
+        endurance_score=_opt_int(payload.get("enduranceScore")),
+        classification_id=_opt_int(payload.get("hillScoreClassificationId")),
+        feedback_phrase_id=_opt_int(payload.get("hillScoreFeedbackPhraseId")),
+        vo2_max=_opt_float(payload.get("vo2MaxPreciseValue") or payload.get("vo2Max")),
+        note=None if overall is not None else "No hill score yet — needs qualifying climbing efforts.",
+    )
+
+
+def _parse_activity_weather(activity_id: str, raw: Any) -> ActivityWeather:
+    if not isinstance(raw, dict):
+        return ActivityWeather(
+            activity_id=str(activity_id), note="No weather data recorded for this activity."
+        )
+    weather_type = raw.get("weatherTypeDTO") or {}
+    station = raw.get("weatherStationDTO") or {}
+    return ActivityWeather(
+        activity_id=str(activity_id),
+        description=_opt_str(weather_type.get("desc")) if isinstance(weather_type, dict) else None,
+        temp=_opt_float(raw.get("temp")),
+        apparent_temp=_opt_float(raw.get("apparentTemp")),
+        dew_point=_opt_float(raw.get("dewPoint")),
+        relative_humidity=_opt_float(raw.get("relativeHumidity")),
+        wind_speed=_opt_float(raw.get("windSpeed")),
+        wind_gust=_opt_float(raw.get("windGust")),
+        wind_direction_compass=_opt_str(raw.get("windDirectionCompassPoint")),
+        wind_direction_degrees=_opt_float(raw.get("windDirection")),
+        station_name=_opt_str(station.get("name")) if isinstance(station, dict) else None,
+        observed_at=_opt_str(raw.get("issueDate")),
+    )
 
 
 # ---------------------------------------------------------------------------

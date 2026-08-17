@@ -72,6 +72,10 @@ _READ_METHODS: frozenset[str] = frozenset(
         "get_weekly_stress",
         "get_workouts",
         "get_workout_by_id",
+        "get_activity_exercise_sets",
+        "get_endurance_score",
+        "get_hill_score",
+        "get_activity_weather",
     }
 )
 # Deliberately minimal: create only. No delete_workout / schedule_workout.

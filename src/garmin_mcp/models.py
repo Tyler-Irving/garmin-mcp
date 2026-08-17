@@ -119,6 +119,13 @@ class TrainingLoadSummary(_StrictBase):
     current_status: str | None = None
     current_atl: float | None = None
     current_ctl: float | None = None
+    acwr_percent: float | None = Field(
+        default=None,
+        description="Acute:chronic workload ratio as a percentage (Garmin's load ratio).",
+    )
+    acwr_status: str | None = Field(
+        default=None, description="Garmin's qualitative ACWR band, e.g. OPTIMAL, LOW, HIGH."
+    )
 
 
 class HRVDayReading(_StrictBase):
@@ -328,6 +335,99 @@ class DailyBriefing(_StrictBase):
         default_factory=list,
         description="Names of sections that could not be fetched for this briefing.",
     )
+
+
+class StrengthSet(_StrictBase):
+    """One recorded set from a logged strength session."""
+
+    set_index: int | None = None
+    set_type: str | None = Field(default=None, description="ACTIVE (a working set) or REST.")
+    exercise_name: str | None = Field(
+        default=None, description="Garmin's recognised exercise, e.g. LEG_PRESS; null if unknown."
+    )
+    category: str | None = None
+    reps: int | None = None
+    weight_kg: float | None = None
+    weight_lb: float | None = None
+    duration_seconds: float | None = None
+    start_time: str | None = None
+
+
+class StrengthExerciseSummary(_StrictBase):
+    """Per-exercise rollup across the working sets of a session."""
+
+    exercise_name: str | None = None
+    category: str | None = None
+    sets: int = 0
+    total_reps: int = 0
+    max_weight_kg: float | None = None
+    max_weight_lb: float | None = None
+
+
+class StrengthSession(_StrictBase):
+    """Set-by-set breakdown of a logged strength_training activity."""
+
+    activity_id: str
+    total_active_sets: int = 0
+    total_reps: int = 0
+    total_volume_kg: float | None = Field(
+        default=None, description="Sum of reps x weight across working sets, in kg."
+    )
+    exercises: list[StrengthExerciseSummary] = Field(default_factory=list)
+    sets: list[StrengthSet] = Field(default_factory=list)
+    note: str | None = None
+
+
+class EnduranceContributor(_StrictBase):
+    activity_type_id: int | None = None
+    group: int | None = None
+    contribution_percent: float | None = None
+
+
+class EnduranceScore(_StrictBase):
+    date: str
+    overall_score: int | None = Field(default=None, description="Garmin endurance score.")
+    classification: int | None = Field(
+        default=None, description="Garmin classification band id (higher is more trained)."
+    )
+    feedback_phrase_id: int | None = None
+    gauge_lower_limit: int | None = None
+    gauge_upper_limit: int | None = None
+    contributors: list[EnduranceContributor] = Field(default_factory=list)
+    note: str | None = None
+
+
+class HillScore(_StrictBase):
+    date: str
+    overall_score: int | None = None
+    strength_score: int | None = None
+    endurance_score: int | None = None
+    classification_id: int | None = None
+    feedback_phrase_id: int | None = None
+    vo2_max: float | None = None
+    note: str | None = None
+
+
+class ActivityWeather(_StrictBase):
+    """Weather observed during an activity.
+
+    Units follow your Garmin account's measurement system (US accounts report
+    temperature in degrees Fahrenheit and wind speed in mph).
+    """
+
+    activity_id: str
+    description: str | None = Field(default=None, description="e.g. Fair, Cloudy, Rain.")
+    temp: float | None = None
+    apparent_temp: float | None = None
+    dew_point: float | None = None
+    relative_humidity: float | None = None
+    wind_speed: float | None = None
+    wind_gust: float | None = None
+    wind_direction_compass: str | None = None
+    wind_direction_degrees: float | None = None
+    station_name: str | None = None
+    observed_at: str | None = None
+    note: str | None = None
 
 
 # ---------------------------------------------------------------------------
