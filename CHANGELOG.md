@@ -4,6 +4,25 @@ All notable changes to garmin-mcp are documented here. The project uses semantic
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-17
+
+### Added
+
+- **Running workout creation** — `preview_running_workout` validates the structure offline (one end condition per step, paired 'M:SS'/km pace bounds converted to m/s, repeat groups for intervals) and returns a step-by-step summary plus a content-bound confirmation token; `create_running_workout` uploads after the token matches. Tool design adapted from [#10](https://github.com/Tyler-Irving/garmin-mcp/pull/10) by @davidreinagarcia — thank you!
+- **Calendar scheduling** — `schedule_workout` puts any library workout (running, strength, …) on a Garmin Connect calendar date, from where it syncs to the watch **automatically** (no "Send to Device" step); `unschedule_workout` removes the calendar entry and keeps the template.
+- **Workout library management** — `list_workouts` (uncached listing of library templates) and `delete_workout`, the server's first delete: the initial call deletes nothing and returns the workout's name plus an id-bound confirmation token; only the confirmed second call deletes.
+- **Four read tools**: `get_strength_sets` (set-by-set breakdown of a logged strength session), `get_endurance_score`, `get_hill_score`, and `get_activity_weather`.
+
+### Fixed
+
+- **Training load parsing** — `acuteTrainingLoadDTO` is nested under `mostRecentTrainingStatus.latestTrainingStatusData.<deviceId>`, not at the top level, and the load values live in `dailyTrainingLoadAcute`/`dailyTrainingLoadChronic`; ATL/CTL now populate (also reported in [#9](https://github.com/Tyler-Irving/garmin-mcp/pull/9) by @davidreinagarcia). The summary additionally surfaces ACWR (`acwr_percent`, `acwr_status`).
+- Related parsing corrections for stress, training readiness, and weekly intensity minutes.
+- Strength sets logged with no weight are reported as unloaded (`null`) instead of `0.0`.
+
+### Changed
+
+- The write allowlist grew from `upload_workout` alone to `upload_workout`, `delete_workout`, `schedule_workout`, `unschedule_workout` — still enforced at the client layer and still entirely behind `GARMIN_WRITE_ENABLED` (default off). Every destructive or creating write requires a preview-issued confirmation token.
+
 ## [0.4.0] — 2026-05-31
 
 ### Added
@@ -106,7 +125,8 @@ Six new tools, taking the total from 9 to 15:
 - `garminconnect` wrapper with persistent session tokens, transparent re-auth, exponential-backoff retry, and 1-req/2s rate limiting.
 - Saved tokens default to the user's platform cache directory (`~/.cache/garmin-mcp/garth/` on Linux, equivalent on macOS / Windows). `GARMIN_TOKEN_DIR` env var overrides for Cloud Run.
 
-[Unreleased]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Tyler-Irving/garmin-mcp/compare/v0.2.3...v0.3.0

@@ -1,18 +1,20 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-16/server.schema.json",
   "name": "io.github.Tyler-Irving/garmin-mcp",
-  "description": "Expose your Garmin Connect data to an MCP client as tools — sleep, HRV, Body Battery, training load/readiness, and a one-call daily briefing. Read-only by default with one opt-in write path for creating strength workouts.",
+  "description": "Expose your Garmin Connect data to an MCP client as tools \u2014 sleep, HRV, Body Battery, training load/readiness, and a one-call daily briefing. Read-only by default, with opt-in write tools to create strength and running workouts, manage the workout library, and schedule workouts to a calendar date for automatic watch sync.",
   "repository": {
     "url": "https://github.com/Tyler-Irving/garmin-mcp",
     "source": "github"
   },
-  "version": "0.4.0",
+  "version": "0.5.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "garmin-mcp",
-      "version": "0.4.0",
-      "transport": { "type": "stdio" }
+      "version": "0.5.0",
+      "transport": {
+        "type": "stdio"
+      }
     }
   ]
 }
