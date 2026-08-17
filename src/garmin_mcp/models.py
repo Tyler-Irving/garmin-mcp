@@ -531,6 +531,89 @@ class WorkoutDeleted(_StrictBase):
     )
 
 
+# ---------------------------------------------------------------------------
+# Running workout creation + scheduling (write) — input model design adapted
+# from PR #10 by David Reina Garcia.
+# ---------------------------------------------------------------------------
+
+
+class RunningStepInput(BaseModel):
+    """One step in a running workout.
+
+    Specify either ``duration_seconds`` (time-based) or ``distance_meters``
+    (distance-based) as the end condition — not both. Pace targets are
+    optional; omit them to let the athlete self-regulate.
+    """
+
+    type: str = Field(
+        description=(
+            "Step type: 'warmup', 'cooldown', 'interval', 'recovery', 'rest', or "
+            "'active' (generic main-set step)."
+        )
+    )
+    duration_seconds: int | None = Field(
+        default=None,
+        description="End condition: run for this many seconds. Exclusive with distance_meters.",
+    )
+    distance_meters: float | None = Field(
+        default=None,
+        description="End condition: run this distance in metres. Exclusive with duration_seconds.",
+    )
+    pace_min_per_km: str | None = Field(
+        default=None,
+        description="Faster (smaller) pace bound as 'M:SS' per km, e.g. '4:30'.",
+    )
+    pace_max_per_km: str | None = Field(
+        default=None,
+        description="Slower (larger) pace bound as 'M:SS' per km, e.g. '4:45'.",
+    )
+    note: str | None = Field(default=None, description="Optional note shown on the watch.")
+
+
+class RunningRepeatInput(BaseModel):
+    """Repeat group: ``iterations`` rounds of ``steps`` (e.g. 5 x interval + recovery)."""
+
+    iterations: int = Field(description="Number of times to repeat the enclosed steps.", ge=1)
+    steps: list[RunningStepInput] = Field(description="Steps to repeat (interval + recovery).")
+
+
+class RunningWorkoutInput(BaseModel):
+    name: str = Field(description="Workout name shown in Garmin Connect and on the watch.")
+    description: str | None = Field(default=None, description="Optional description.")
+    steps: list[RunningRepeatInput | RunningStepInput] = Field(
+        description=(
+            "Ordered steps and/or repeat groups. Typical: [warmup, repeat group, cooldown]."
+        )
+    )
+
+
+class RunningWorkoutPreview(_StrictBase):
+    name: str
+    summary: str = Field(description="Human-readable step-by-step summary.")
+    estimated_duration_seconds: int
+    warnings: list[str] = Field(default_factory=list)
+    confirmation_token: str = Field(description="Pass to create_running_workout to confirm.")
+
+
+class RunningWorkoutCreated(_StrictBase):
+    workout_id: str | None = None
+    name: str
+    status: str
+
+
+class WorkoutScheduled(_StrictBase):
+    schedule_id: str | None = None
+    workout_id: str
+    workout_name: str | None = None
+    calendar_date: str
+    status: str
+
+
+class WorkoutUnscheduled(_StrictBase):
+    schedule_id: str
+    status: str
+
+
 def _opt_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
