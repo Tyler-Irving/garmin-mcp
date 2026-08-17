@@ -78,8 +78,9 @@ _READ_METHODS: frozenset[str] = frozenset(
         "get_activity_weather",
     }
 )
-# Deliberately minimal: create only. No delete_workout / schedule_workout.
-_WRITE_METHODS: frozenset[str] = frozenset({"upload_workout"})
+# Deliberately minimal: create + delete of library workouts only. No
+# schedule_workout / unschedule_workout, and no activity or profile writes.
+_WRITE_METHODS: frozenset[str] = frozenset({"upload_workout", "delete_workout"})
 
 
 class GarminClient:

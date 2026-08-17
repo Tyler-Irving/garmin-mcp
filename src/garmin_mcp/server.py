@@ -92,6 +92,9 @@ from garmin_mcp.models import (
     TrainingReadinessFactor,
     WeeklyBucket,
     WeeklySummary,
+    WorkoutDeleted,
+    WorkoutList,
+    WorkoutSummary,
     _opt_float,
     _opt_int,
     _opt_str,
@@ -1056,6 +1059,129 @@ async def create_strength_workout(
         status=status,
         verified=verified,
         blank_steps=blanks,
+    )
+
+
+def _workout_summary(raw: dict[str, Any]) -> WorkoutSummary | None:
+    workout_id = _opt_str(raw.get("workoutId"))
+    if workout_id is None:
+        return None
+    sport = raw.get("sportType")
+    return WorkoutSummary(
+        workout_id=workout_id,
+        name=_opt_str(raw.get("workoutName")),
+        sport=_opt_str(sport.get("sportTypeKey")) if isinstance(sport, dict) else None,
+        updated=_opt_str(raw.get("updatedDate") or raw.get("updateDate")),
+    )
+
+
+@mcp.tool()
+async def list_workouts(limit: int = 50) -> WorkoutList:
+    """List workouts saved in your Garmin Connect library (id, name, sport).
+
+    These are workout *templates* in the library — the source the watch syncs
+    from — not logged activities. Use the ids with ``delete_workout``.
+
+    Args:
+        limit: maximum number of workouts to return (default 50).
+    """
+    # Deliberately uncached: create_strength_workout / delete_workout change
+    # this list within a session, and a stale listing here could aim a delete
+    # at the wrong target.
+    client = _get_garmin()
+    raw = await client.call("get_workouts", 0, max(1, min(limit, 200)))
+    items = raw if isinstance(raw, list) else []
+    workouts = [w for w in (_workout_summary(i) for i in items if isinstance(i, dict)) if w]
+    return WorkoutList(workouts=workouts, count=len(workouts))
+
+
+def _delete_token(workout_id: str) -> str:
+    """Confirmation token for deleting one specific workout.
+
+    Bound to the workout id, so a token previewed for one workout can never
+    confirm the deletion of another. Empty when no JWT secret is configured
+    (stdio/dev), in which case ``confirm=True`` is used.
+    """
+    if not JWT_SECRET:
+        return ""
+    canonical = f"delete-workout-v1:{workout_id}"
+    return hmac.new(JWT_SECRET.encode(), canonical.encode(), hashlib.sha256).hexdigest()[:16]
+
+
+@mcp.tool()
+async def delete_workout(
+    workout_id: str,
+    confirmation_token: str = "",
+    confirm: bool = False,
+) -> WorkoutDeleted:
+    """Delete ONE workout from your Garmin Connect library (a WRITE, irreversible).
+
+    Preview-then-confirm: call without a token first — that call deletes
+    nothing and returns the workout's name plus a ``confirmation_token``.
+    Review the name, then call again with the token to actually delete.
+    Deleting from the library also removes the workout from the watch on its
+    next sync. There is no bulk delete; confirm each workout individually.
+
+    Args:
+        workout_id: id from ``list_workouts``.
+        confirmation_token: token from the preview call for this same id.
+        confirm: dev/stdio only (no JWT secret) — set True to confirm.
+    """
+    if not WRITE_ENABLED:
+        log.warning("workout.delete.denied", workout_id=workout_id, reason="writes_disabled")
+        raise ValueError(
+            "Writes are disabled. Set GARMIN_WRITE_ENABLED=1 to allow deleting workouts."
+        )
+
+    client = _get_garmin()
+    # Always fetch first: proves the id exists and gives the user the name they
+    # are about to delete. A typo'd id fails here, before any token is issued.
+    raw = await client.call("get_workout_by_id", workout_id)
+    name = _opt_str(raw.get("workoutName")) if isinstance(raw, dict) else None
+
+    expected = _delete_token(workout_id)
+    if expected:
+        if not confirmation_token:
+            return WorkoutDeleted(
+                workout_id=workout_id,
+                name=name,
+                deleted=False,
+                status=(
+                    f"NOT deleted. This would delete '{name or workout_id}'. Pass "
+                    "confirmation_token back to delete_workout to confirm."
+                ),
+                confirmation_token=expected,
+            )
+        # Constant-time compare: same rationale as create_strength_workout.
+        if not hmac.compare_digest(confirmation_token, expected):
+            raise ValueError(
+                "confirmation_token does not match this workout_id — call "
+                "delete_workout without a token first and use the token it returns."
+            )
+    elif confirm and _TRANSPORT == "stdio":
+        # Dev/stdio only: no JWT secret to bind a token, so an explicit confirm
+        # stands in. Never reachable over HTTP (see run_http's start-up guard).
+        log.info("workout.delete.dev_confirm", workout_id=workout_id)
+    else:
+        return WorkoutDeleted(
+            workout_id=workout_id,
+            name=name,
+            deleted=False,
+            status=(
+                f"NOT deleted. This would delete '{name or workout_id}'. "
+                "Call again with confirm=True to confirm (local stdio only)."
+            ),
+        )
+
+    log.info("workout.delete.attempt", workout_id=workout_id, name=name)
+    await client.call("delete_workout", workout_id)
+    log.info("workout.delete.success", workout_id=workout_id, name=name)
+    return WorkoutDeleted(
+        workout_id=workout_id,
+        name=name,
+        deleted=True,
+        status=f"Deleted '{name or workout_id}' from your Garmin Connect library. "
+        "It will disappear from the watch on its next sync.",
     )
 
 

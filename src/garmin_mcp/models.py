@@ -508,6 +508,29 @@ class StrengthWorkoutCreated(_StrictBase):
     )
 
 
+class WorkoutSummary(_StrictBase):
+    workout_id: str
+    name: str | None = None
+    sport: str | None = None
+    updated: str | None = Field(default=None, description="Last-updated timestamp from Garmin.")
+
+
+class WorkoutList(_StrictBase):
+    workouts: list[WorkoutSummary]
+    count: int
+
+
+class WorkoutDeleted(_StrictBase):
+    workout_id: str
+    name: str | None = None
+    deleted: bool = Field(description="False on the preview call; True once actually deleted.")
+    status: str
+    confirmation_token: str = Field(
+        default="",
+        description="On a preview call: pass this back to delete_workout to confirm.",
+    )
+
+
 def _opt_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
