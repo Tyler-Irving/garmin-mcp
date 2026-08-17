@@ -76,6 +76,9 @@ from garmin_mcp.models import (
     RespirationSummary,
     RestingHeartRateTrend,
     RHRDay,
+    RunningWorkoutCreated,
+    RunningWorkoutInput,
+    RunningWorkoutPreview,
     SleepSummary,
     StepsAndCalories,
     StrengthExerciseSummary,
@@ -94,12 +97,22 @@ from garmin_mcp.models import (
     WeeklySummary,
     WorkoutDeleted,
     WorkoutList,
+    WorkoutScheduled,
     WorkoutSummary,
+    WorkoutUnscheduled,
     _opt_float,
     _opt_int,
     _opt_str,
 )
 from garmin_mcp.paths import default_token_dir
+from garmin_mcp.running_builder import (
+    build_running_workout,
+    estimate_duration_seconds,
+    pace_warnings,
+)
+from garmin_mcp.running_builder import (
+    summarize as summarize_running,
+)
 from garmin_mcp.strength_builder import (
     BlockSpec,
     SetSpec,
@@ -1108,6 +1121,14 @@ def _delete_token(workout_id: str) -> str:
     return hmac.new(JWT_SECRET.encode(), canonical.encode(), hashlib.sha256).hexdigest()[:16]
 
 
+def _running_token(payload: dict[str, Any]) -> str:
+    """Content-bound confirmation token; same scheme as ``_strength_token``."""
+    if not JWT_SECRET:
+        return ""
+    canonical = "running-workout-v1:" + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hmac.new(JWT_SECRET.encode(), canonical.encode(), hashlib.sha256).hexdigest()[:16]
+
+
 @mcp.tool()
 async def delete_workout(
     workout_id: str,
@@ -1182,6 +1203,165 @@ async def delete_workout(
         deleted=True,
         status=f"Deleted '{name or workout_id}' from your Garmin Connect library. "
         "It will disappear from the watch on its next sync.",
+    )
+
+
+@mcp.tool()
+async def preview_running_workout(workout: RunningWorkoutInput) -> RunningWorkoutPreview:
+    """Assemble a running workout and show what WOULD be created — no network call.
+
+    Validates the structure (one end condition per step, paired pace bounds,
+    pace format) and returns a readable summary, sanity warnings, and a
+    ``confirmation_token`` to pass to ``create_running_workout``. Always call
+    this first and review the result.
+
+    Args:
+        workout: the workout definition (name, steps and/or repeat groups).
+    """
+    payload = build_running_workout(workout)
+    return RunningWorkoutPreview(
+        name=workout.name,
+        summary=summarize_running(workout),
+        estimated_duration_seconds=estimate_duration_seconds(workout),
+        warnings=pace_warnings(workout),
+        confirmation_token=_running_token(payload),
+    )
+
+
+@mcp.tool()
+async def create_running_workout(
+    workout: RunningWorkoutInput,
+    confirmation_token: str = "",
+    confirm: bool = False,
+) -> RunningWorkoutCreated:
+    """Create a structured running workout in your Garmin Connect library (a WRITE).
+
+    Supports warmup/cooldown/interval/recovery steps, repeat groups for
+    intervals, and optional pace targets ('M:SS' per km). Requires writes to be
+    enabled (GARMIN_WRITE_ENABLED) and a matching ``confirmation_token`` from
+    ``preview_running_workout``. The workout lands in your library — get it on
+    the watch via ``schedule_workout`` (syncs automatically for that date) or
+    "Send to Device" in Garmin Connect.
+
+    Args:
+        workout: the workout definition (same shape as preview).
+        confirmation_token: token returned by ``preview_running_workout``.
+        confirm: dev/stdio only (no JWT secret) — set True to confirm.
+    """
+    if not WRITE_ENABLED:
+        log.warning("running.create.denied", name=workout.name, reason="writes_disabled")
+        raise ValueError(
+            "Writes are disabled. Set GARMIN_WRITE_ENABLED=1 to allow creating workouts."
+        )
+
+    payload = build_running_workout(workout)
+    expected = _running_token(payload)
+    if expected:
+        # Constant-time compare: same rationale as create_strength_workout.
+        if not hmac.compare_digest(confirmation_token, expected):
+            raise ValueError(
+                "confirmation_token does not match this workout — call "
+                "preview_running_workout again and pass its token."
+            )
+    elif confirm and _TRANSPORT == "stdio":
+        log.info("running.create.dev_confirm", name=workout.name)
+    else:
+        raise ValueError(
+            "Cannot confirm this write: set JWT_SECRET and pass the token from "
+            "preview_running_workout. (confirm=True is honored only on local stdio.)"
+        )
+
+    client = _get_garmin()
+    log.info("running.create.attempt", name=workout.name)
+    result = await client.call("upload_workout", payload)
+    workout_id = (
+        str(result["workoutId"])
+        if isinstance(result, dict) and result.get("workoutId") is not None
+        else None
+    )
+    log.info("running.create.success", workout_id=workout_id, name=workout.name)
+
+    status = (
+        f"Created '{workout.name}'"
+        + (f" (id {workout_id})" if workout_id else "")
+        + " in your Garmin Connect library. It is NOT on the watch yet — schedule it "
+        "with schedule_workout to sync it automatically, or open Garmin Connect and "
+        "tap 'Send to Device'."
+    )
+    return RunningWorkoutCreated(workout_id=workout_id, name=workout.name, status=status)
+
+
+@mcp.tool()
+async def schedule_workout(workout_id: str, date: str) -> WorkoutScheduled:
+    """Put an existing library workout on a Garmin Connect calendar date (a WRITE).
+
+    Works for any workout type (running, strength, ...). A scheduled workout is
+    pushed to the watch automatically on its next sync — no "Send to Device"
+    needed. Reversible with ``unschedule_workout``.
+
+    Args:
+        workout_id: id from create_running_workout / create_strength_workout /
+            list of workouts in Garmin Connect.
+        date: calendar date, YYYY-MM-DD.
+    """
+    if not WRITE_ENABLED:
+        log.warning("workout.schedule.denied", workout_id=workout_id, reason="writes_disabled")
+        raise ValueError(
+            "Writes are disabled. Set GARMIN_WRITE_ENABLED=1 to allow scheduling workouts."
+        )
+    target_date = _normalise_date(date, "")
+    if not target_date:
+        raise ValueError("date is required, YYYY-MM-DD.")
+
+    client = _get_garmin()
+    log.info("workout.schedule.attempt", workout_id=workout_id, date=target_date)
+    result = await client.call("schedule_workout", workout_id, target_date)
+
+    schedule_id = None
+    workout_name = None
+    calendar_date = target_date
+    if isinstance(result, dict):
+        schedule_id = _opt_str(result.get("workoutScheduleId") or result.get("id"))
+        workout = result.get("workout")
+        if isinstance(workout, dict):
+            workout_name = _opt_str(workout.get("workoutName"))
+        calendar_date = _opt_str(result.get("calendarDate")) or target_date
+    log.info("workout.schedule.success", schedule_id=schedule_id, date=calendar_date)
+
+    return WorkoutScheduled(
+        schedule_id=schedule_id,
+        workout_id=workout_id,
+        workout_name=workout_name,
+        calendar_date=calendar_date,
+        status=(
+            f"'{workout_name or workout_id}' scheduled for {calendar_date}. It reaches "
+            "the watch on its next sync (then Training > Workouts, or the calendar)."
+        ),
+    )
+
+
+@mcp.tool()
+async def unschedule_workout(schedule_id: str) -> WorkoutUnscheduled:
+    """Remove a scheduled workout from the calendar (a WRITE; keeps the template).
+
+    The workout stays in your library — only the calendar entry is removed.
+
+    Args:
+        schedule_id: id returned by ``schedule_workout``.
+    """
+    if not WRITE_ENABLED:
+        log.warning("workout.unschedule.denied", schedule_id=schedule_id, reason="writes_disabled")
+        raise ValueError(
+            "Writes are disabled. Set GARMIN_WRITE_ENABLED=1 to allow unscheduling workouts."
+        )
+
+    client = _get_garmin()
+    log.info("workout.unschedule.attempt", schedule_id=schedule_id)
+    await client.call("unschedule_workout", schedule_id)
+    log.info("workout.unschedule.success", schedule_id=schedule_id)
+    return WorkoutUnscheduled(
+        schedule_id=schedule_id,
+        status=f"Removed calendar entry {schedule_id}. The workout template is untouched.",
     )
 
 

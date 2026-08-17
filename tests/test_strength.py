@@ -290,9 +290,11 @@ def test_weight_unit_unknown_is_rejected() -> None:
 
 
 def test_client_rejects_non_allowlisted_method() -> None:
+    # set_activity_name is a real garminconnect write we deliberately never
+    # allowlist — if this test starts failing, the allowlist grew by accident.
     client = GarminClient(email="", password="", token_dir="/tmp/x")
     with pytest.raises(GarminClientError, match="allowlist"):
-        asyncio.run(client.call("schedule_workout", 123))
+        asyncio.run(client.call("set_activity_name", 123, "x"))
 
 
 def test_client_blocks_delete_when_writes_disabled() -> None:
