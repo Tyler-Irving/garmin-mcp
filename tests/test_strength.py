@@ -292,6 +292,12 @@ def test_weight_unit_unknown_is_rejected() -> None:
 def test_client_rejects_non_allowlisted_method() -> None:
     client = GarminClient(email="", password="", token_dir="/tmp/x")
     with pytest.raises(GarminClientError, match="allowlist"):
+        asyncio.run(client.call("schedule_workout", 123))
+
+
+def test_client_blocks_delete_when_writes_disabled() -> None:
+    client = GarminClient(email="", password="", token_dir="/tmp/x", allow_writes=False)
+    with pytest.raises(GarminAuthError, match="writes are disabled"):
         asyncio.run(client.call("delete_workout", 123))
 
 
